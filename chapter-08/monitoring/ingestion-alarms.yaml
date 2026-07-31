@@ -1,0 +1,364 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudWatch alarms for Bedrock Knowledge Base ingestion failures (Chapter 8,
+  "AgentCore in Production"). Prevents the "runbook that didn't exist"
+  incident (Section 8.1): the console does not surface per-document ingestion
+  failures. LOG-BASED design, not metric-based: KB ingestion has no native
+  AWS/Bedrock CloudWatch metrics, only JSON logs via the vended-log-delivery
+  pipeline (DeliverySource/DeliveryDestination/Delivery below). Metric filters
+  extract event_type, connector_document_status.Status and level into custom
+  metrics; alarms fire on those. See kb-managed-observability.html in the
+  Bedrock user guide for the exact event schema. Deploy per KB in
+  production (skipping this is anti-pattern #3). Deploy-time note: the
+  deploying principal needs logs:PutDeliverySource/PutDeliveryDestination/
+  CreateDelivery/PutResourcePolicy and bedrock:AllowVendedLogDeliveryForResource.
+
+Parameters:
+  KnowledgeBaseId:
+    Type: String
+    Description: The Bedrock Knowledge Base ID to monitor
+
+  KnowledgeBaseName:
+    Type: String
+    Description: Human-readable name (used in alarm names, log group, and metric namespace)
+
+  NotificationTopicArn:
+    Type: String
+    Description: SNS topic ARN for alerts (PagerDuty, Slack, email, etc.)
+
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, production]
+    Default: production
+
+  LogRetentionInDays:
+    Type: Number
+    Default: 30
+    Description: How long to keep raw ingestion logs in CloudWatch Logs
+
+Resources:
+
+  # ========================================================================
+  # Log delivery pipeline: KB ingestion logs -> CloudWatch Logs
+  # ========================================================================
+  # APPLICATION_LOGS is the only log type Knowledge Bases support (per the
+  # docs above) and is what carries both the job-level and per-document
+  # ingestion status events used by the metric filters below.
+
+  IngestionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/vendedlogs/bedrock/kb-${KnowledgeBaseName}-ingestion"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  # Same-account delivery to a CloudWatch Logs destination requires an
+  # explicit resource policy granting delivery.logs.amazonaws.com write
+  # access — it is not implied by creating the log group.
+  IngestionLogGroupDeliveryPolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: !Sub "kb-${KnowledgeBaseName}-vended-logs-policy"
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AWSLogDeliveryWrite",
+              "Effect": "Allow",
+              "Principal": { "Service": "delivery.logs.amazonaws.com" },
+              "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+              "Resource": "${IngestionLogGroup.Arn}",
+              "Condition": {
+                "StringEquals": { "aws:SourceAccount": "${AWS::AccountId}" },
+                "ArnLike": { "aws:SourceArn": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*" }
+              }
+            }
+          ]
+        }
+
+  KbDeliverySource:
+    Type: AWS::Logs::DeliverySource
+    Properties:
+      Name: !Sub "kb-${KnowledgeBaseName}-delivery-source"
+      ResourceArn: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}"
+      LogType: APPLICATION_LOGS
+
+  KbDeliveryDestination:
+    Type: AWS::Logs::DeliveryDestination
+    Properties:
+      Name: !Sub "kb-${KnowledgeBaseName}-delivery-destination"
+      DeliveryDestinationType: CWL
+      DestinationResourceArn: !GetAtt IngestionLogGroup.Arn
+      OutputFormat: json
+
+  KbDelivery:
+    Type: AWS::Logs::Delivery
+    DependsOn: IngestionLogGroupDeliveryPolicy
+    Properties:
+      DeliverySourceName: !Ref KbDeliverySource
+      DeliveryDestinationArn: !GetAtt KbDeliveryDestination.Arn
+
+  # ========================================================================
+  # Metric filters: extract the documented log fields into custom metrics
+  # ========================================================================
+  # ------------------------------------------------------------------------
+  # THE ACTUAL LOG SCHEMA (do not guess at these field names)
+  # ------------------------------------------------------------------------
+  # A metric filter whose pattern never matches publishes nothing, the alarm
+  # on top of it sits in INSUFFICIENT_DATA forever, and if that alarm carries
+  # TreatMissingData: breaching it goes to ALARM at stack creation and stays
+  # there. cfn-lint and validate-template both pass a filter with invented
+  # field names, so the only defence is using the documented schema.
+  #
+  # Bedrock emits exactly two event types, per
+  # https://docs.aws.amazon.com/bedrock/latest/userguide/kb-managed-observability.html
+  #
+  # Job-level  — event_type = "StartIngestionJob.StatusChanged"
+  #   { "event_timestamp": 1718677300000,
+  #     "event": { "ingestion_job_id": "...", "data_source_id": "...",
+  #                "knowledge_base_arn": "...",
+  #                "message": "Crawling started" | "Crawling completed" },
+  #     "event_version": "1.0",
+  #     "event_type": "StartIngestionJob.StatusChanged",
+  #     "level": "INFO" }
+  #
+  #   Note what is NOT here: there is no `ingestion_job_status` field and no
+  #   `resource_statistics` object. Job progress is a human-readable
+  #   `message`, which is why the completion filter below matches on
+  #   "Crawling completed" rather than on a status enum.
+  #
+  # Document-level — event_type = "StartIngestionJob.ResourceStatusChanged"
+  #   { "event": { "document_id": "...", "source_uri": "...",
+  #                "crawl_action": "ADD" | "DELETE" | "UNMODIFIED",
+  #                "crawl_status":  { "Status": "SUCCESS" | "FAILED" },
+  #                "sync_status":   { "Status": "SUCCESS" | "FAILED" },
+  #                "index_status":  { "Status": "SUCCESS" | "FAILED" },
+  #                "connector_document_status": { "Status": "SUCCESS" | "FAILED" },
+  #                "chunk_statistics": { "created": int, "deleted": int,
+  #                                      "failed_to_create": int,
+  #                                      "failed_to_delete": int },
+  #                "error_message": "<only present on failure>" },
+  #     "event_type": "StartIngestionJob.ResourceStatusChanged",
+  #     "level": "INFO" | "ERROR" }
+  #
+  #   `connector_document_status.Status` is the consolidated per-document
+  #   status, and is the field AWS's own documented Logs Insights query uses
+  #   to list failed documents. That is what the per-document filter matches.
+
+  # Per-document failures. One log entry per failed document, so a simple
+  # count of matches is the number of documents that failed — no numeric
+  # extraction needed. This is the failure mode behind the "runbook that
+  # didn't exist" incident: the job completes, individual documents are
+  # silently dropped.
+  DocumentFailedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref IngestionLogGroup
+      FilterPattern: >-
+        { ($.event_type = "StartIngestionJob.ResourceStatusChanged")
+          && ($.event.connector_document_status.Status = "FAILED") }
+      MetricTransformations:
+        - MetricName: IngestionDocumentFailedCount
+          MetricNamespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
+  # Any ERROR-level ingestion log, whichever event type it came from.
+  # There is no documented job-level "job failed" event — job-level logs
+  # carry only a human-readable message — so `level` is the honest signal
+  # for "something went wrong during ingestion" at the job scope.
+  IngestionErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref IngestionLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricName: IngestionErrorCount
+          MetricNamespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
+  # Counts job completions so the stale-ingestion alarm can detect "no sync
+  # completed in N days" from a Sum-over-7-days < 1 condition. Matches the
+  # documented job-level completion message.
+  IngestionJobCompletedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref IngestionLogGroup
+      FilterPattern: >-
+        { ($.event_type = "StartIngestionJob.StatusChanged")
+          && ($.event.message = "Crawling completed") }
+      MetricTransformations:
+        - MetricName: IngestionJobCompletedCount
+          MetricNamespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
+  # ========================================================================
+  # Alarm 1: Ingestion job failed outright
+  # ========================================================================
+
+  IngestionJobFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: IngestionErrorMetricFilter
+    Properties:
+      AlarmName: !Sub "kb-${KnowledgeBaseName}-ingestion-failed"
+      AlarmDescription: !Sub |
+        Ingestion for Knowledge Base ${KnowledgeBaseName} logged an
+        ERROR-level event. Investigate with CloudWatch Logs Insights on log
+        group ${IngestionLogGroup}:
+          filter level = "ERROR"
+          | fields event.document_id, event.source_uri, event.error_message, @timestamp
+          | sort @timestamp desc
+        Or use the Bedrock console under Data sources -> Sync history.
+        Common causes: IAM permission gaps, oversized files for SEMANTIC
+        chunking (>1MB), embedding-model rate limits, or S3 access errors.
+      Namespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
+      MetricName: IngestionErrorCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopicArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Source
+          Value: playbook-chapter-08
+
+  # ========================================================================
+  # Alarm 2: Per-document failures within a job that "succeeded"
+  # ========================================================================
+  # A subtler failure mode: the IngestionJob status is COMPLETE but individual
+  # documents failed to process. This is what produced the runbook incident:
+  # the job's overall status was green, but the critical 1.2MB document was
+  # silently dropped because SEMANTIC chunking refused it.
+
+  DocumentsFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: DocumentFailedMetricFilter
+    Properties:
+      AlarmName: !Sub "kb-${KnowledgeBaseName}-documents-failed"
+      AlarmDescription: !Sub |
+        One or more documents in Knowledge Base ${KnowledgeBaseName} failed
+        to ingest, even if the overall job completed. Find them with the
+        query AWS documents for exactly this, on log group
+        ${IngestionLogGroup}:
+          filter event.connector_document_status.Status = "FAILED"
+          | fields event.document_id, event.source_uri, event.error_message, @timestamp
+          | sort @timestamp desc
+        This is the failure mode that caused the "runbook that didn't exist"
+        incident — silent per-document drops while the overall job appears
+        green. `error_message` is populated only on failure, so it names the
+        cause directly.
+      Namespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
+      MetricName: IngestionDocumentFailedCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopicArn
+
+  # ========================================================================
+  # Alarm 3: No successful sync in N days (silent rot)
+  # ========================================================================
+  # Detects Knowledge Bases that stopped ingesting. If the S3 source stops
+  # changing, no jobs run. If a scheduled sync silently fails to trigger,
+  # the KB drifts out of sync with the source. This alarm catches "the KB
+  # is configured but no new data has flowed through in a week".
+
+  StaleIngestionAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: IngestionJobCompletedMetricFilter
+    Properties:
+      AlarmName: !Sub "kb-${KnowledgeBaseName}-stale-no-sync-7d"
+      AlarmDescription: !Sub |
+        No successful ingestion job has completed for Knowledge Base
+        ${KnowledgeBaseName} in 7 days. This may be intentional (static
+        corpus) or unintentional (scheduled sync failure, IAM expiration,
+        source bucket permission change). Verify the corpus state matches
+        the team's expectation.
+      Namespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
+      MetricName: IngestionJobCompletedCount
+      Statistic: Sum
+      Period: 604800   # 7 days in seconds
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching   # Missing data IS the problem here
+      AlarmActions:
+        - !Ref NotificationTopicArn
+
+  # ========================================================================
+  # Dashboard tying it together
+  # ========================================================================
+
+  KbHealthDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "kb-health-${KnowledgeBaseName}"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["Custom/BedrockKB/${KnowledgeBaseName}", "IngestionJobCompletedCount"],
+                  [".", "IngestionJobFailedCount"]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Ingestion jobs — completed vs failed",
+                "period": 3600
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["Custom/BedrockKB/${KnowledgeBaseName}", "IngestionDocumentFailedCount"]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Documents failed to ingest",
+                "period": 3600
+              }
+            },
+            {
+              "type": "log",
+              "x": 0, "y": 6, "width": 24, "height": 6,
+              "properties": {
+                "query": "SOURCE '${IngestionLogGroup}' | filter event_type = \"StartIngestionJob.ResourceStatusChanged\" | stats count(*) as eventCount by event.connector_document_status.Status",
+                "region": "${AWS::Region}",
+                "title": "Per-document ingestion status (Logs Insights)",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  IngestionLogGroupName:
+    Value: !Ref IngestionLogGroup
+  IngestionJobFailedAlarm:
+    Value: !Ref IngestionJobFailedAlarm
+  DocumentsFailedAlarm:
+    Value: !Ref DocumentsFailedAlarm
+  StaleIngestionAlarm:
+    Value: !Ref StaleIngestionAlarm
+  DashboardName:
+    Value: !Sub "kb-health-${KnowledgeBaseName}"

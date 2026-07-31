@@ -1,0 +1,409 @@
+# Accompanies Chapter 10 of "AgentCore in Production: The Operator's Playbook".
+#
+# These alarms are the second half of the answer to the Friday-night model
+# swap in Section 10.1. The quality gate in ci/quality_gate.py stops a bad
+# build before it ships; these alarms catch the regressions that only appear
+# under real traffic — a model that behaves differently on the long tail, a
+# tool description that drifted, a knowledge base that stopped syncing.
+#
+# Three alarm shapes, each catching a different failure signature:
+#
+#   1. Sustained low score      — quality is bad and staying bad
+#   2. Sudden drop              — quality fell off a cliff (deploy, model swap)
+#   3. Evaluation stopped       — the measurement itself broke, which is
+#                                 worse than a bad score because it is silent
+#
+# Deploy one stack per agent. Alarms without the third shape give false
+# comfort: a dashboard of flat green lines that stopped updating on Tuesday.
+#
+# (Full narrative kept here rather than in Description: CloudFormation caps
+# template Description at 1024 characters; this comment does not count
+# against that limit.)
+#
+# -----------------------------------------------------------------------------
+# METRIC IDENTITY — READ BEFORE DEPLOYING
+# -----------------------------------------------------------------------------
+# An alarm pointed at a metric that does not exist is worse than no alarm.
+# It sits in INSUFFICIENT_DATA forever, and if it carries
+# TreatMissingData: breaching it goes to ALARM the moment the stack is created
+# and never leaves — paging the team about a metric that never existed. That
+# is a real failure mode, not a hypothetical: neither cfn-lint nor
+# `aws cloudformation validate-template` can detect it, because both validate
+# structure, not whether a namespace/metric pair is real.
+#
+# What is VERIFIED against AWS documentation:
+#   - Namespace: `Bedrock-AgentCore/Evaluations`. Evaluation scores are
+#     published here in Embedded Metric Format. (AgentCore developer guide,
+#     "Results and output" > "Viewing evaluation scores in CloudWatch
+#     Metrics".) An earlier revision of this template used
+#     `AWS/BedrockAgentCore`, which does not exist.
+#   - Online evaluation results land in a per-configuration log group named
+#     `/aws/bedrock-agentcore/evaluations/results/<online-evaluation-config-id>`,
+#     as OpenTelemetry GenAI evaluation-result events in JSON.
+#
+# What you MUST CONFIRM in your own account before trusting the score alarms:
+#   - The exact MetricName and Dimension names. The documentation states that
+#     you narrow results "by evaluator type or evaluation label" but does not
+#     publish the literal strings, and they cannot be introspected before an
+#     evaluation has actually run. The values below (`EvaluationScore`,
+#     dimensions `AgentName` + `EvaluatorId`) are the shape this template
+#     assumes — treat them as placeholders.
+#
+#     After your first online evaluation completes:
+#         aws cloudwatch list-metrics --namespace "Bedrock-AgentCore/Evaluations"
+#     and correct MetricName/Dimensions here to match. Until you have done
+#     that, the five score alarms may sit in INSUFFICIENT_DATA. They use
+#     TreatMissingData: notBreaching precisely so that a wrong guess stays
+#     silent instead of paging you.
+#
+# The one alarm that must never depend on a guess is the
+# evaluation-pipeline-stalled alarm, because it is the only one carrying
+# TreatMissingData: breaching. It is therefore built on a metric filter over
+# the results log group — a name and content format that ARE documented —
+# rather than on an assumed native metric. See EvaluationResultsMetricFilter.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CloudWatch alarms on AgentCore Evaluations metrics: sustained low score,
+  sudden anomaly drop, and evaluation-pipeline-stalled detection for one agent.
+
+Parameters:
+  AgentName:
+    Type: String
+    Description: Short agent name used in alarm names (e.g. acme-support)
+
+  OnlineEvaluationConfigId:
+    Type: String
+    Description: |
+      The onlineEvaluationConfigId returned by CreateOnlineEvaluationConfig.
+      Used to derive the results log group, which AgentCore creates per
+      configuration as
+      /aws/bedrock-agentcore/evaluations/results/<online-evaluation-config-id>.
+
+  EvaluationLogGroup:
+    Type: String
+    Default: ""
+    Description: |
+      Optional override for the evaluation results log group. Leave empty to
+      use the documented per-configuration path derived from
+      OnlineEvaluationConfigId. Set it only if you route results elsewhere.
+
+  StalledAlarmThresholdHours:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 24
+    Description: |
+      Hours without a single evaluation result before the pipeline is
+      considered stalled.
+
+  NotificationTopicArn:
+    Type: String
+    Description: SNS topic for alerts (PagerDuty, Slack, email)
+
+  HelpfulnessFloor:
+    Type: Number
+    Default: 0.6
+    Description: Sustained Helpfulness below this is a problem
+
+  ToolSelectionFloor:
+    Type: Number
+    Default: 0.85
+    Description: |
+      Sustained ToolSelectionAccuracy below this is a problem. Set higher
+      than the response-quality floors: tool selection is closer to
+      deterministic, so a real drop here is a strong signal.
+
+  GoalSuccessFloor:
+    Type: Number
+    Default: 0.6
+
+Conditions:
+  UseDerivedLogGroup: !Equals [!Ref EvaluationLogGroup, ""]
+
+Resources:
+
+  # ======================================================================
+  # Shape 1 — sustained low score
+  # ======================================================================
+  # Long evaluation periods on purpose. Scores are noisy per-trace; a
+  # five-minute window produces alarm flapping and teaches the team to
+  # ignore the alarm, which is worse than not having it.
+
+  HelpfulnessSustainedLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agent-${AgentName}-helpfulness-sustained-low"
+      AlarmDescription: !Sub |
+        Helpfulness for ${AgentName} has averaged below ${HelpfulnessFloor}
+        for two consecutive hours. Investigate recent deploys, prompt changes,
+        and knowledge base sync status.
+      Namespace: Bedrock-AgentCore/Evaluations
+      MetricName: EvaluationScore
+      Dimensions:
+        - Name: AgentName
+          Value: !Ref AgentName
+        - Name: EvaluatorId
+          Value: Builtin.Helpfulness
+      Statistic: Average
+      Period: 3600
+      EvaluationPeriods: 2
+      Threshold: !Ref HelpfulnessFloor
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopicArn
+      OKActions:
+        - !Ref NotificationTopicArn
+
+  ToolSelectionSustainedLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agent-${AgentName}-tool-selection-sustained-low"
+      AlarmDescription: !Sub |
+        ToolSelectionAccuracy for ${AgentName} has averaged below
+        ${ToolSelectionFloor} for two consecutive hours. Most common causes:
+        a model version change, an edited tool description, or a newly added
+        tool whose description overlaps an existing one.
+      Namespace: Bedrock-AgentCore/Evaluations
+      MetricName: EvaluationScore
+      Dimensions:
+        - Name: AgentName
+          Value: !Ref AgentName
+        - Name: EvaluatorId
+          Value: Builtin.ToolSelectionAccuracy
+      Statistic: Average
+      Period: 3600
+      EvaluationPeriods: 2
+      Threshold: !Ref ToolSelectionFloor
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopicArn
+      OKActions:
+        - !Ref NotificationTopicArn
+
+  GoalSuccessSustainedLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agent-${AgentName}-goal-success-sustained-low"
+      AlarmDescription: !Sub |
+        GoalSuccessRate for ${AgentName} below ${GoalSuccessFloor} for four
+        hours. Session-level metric; slower to move and slower to recover.
+      Namespace: Bedrock-AgentCore/Evaluations
+      MetricName: EvaluationScore
+      Dimensions:
+        - Name: AgentName
+          Value: !Ref AgentName
+        - Name: EvaluatorId
+          Value: Builtin.GoalSuccessRate
+      Statistic: Average
+      Period: 3600
+      EvaluationPeriods: 4
+      Threshold: !Ref GoalSuccessFloor
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopicArn
+      OKActions:
+        - !Ref NotificationTopicArn
+
+  # ======================================================================
+  # Shape 2 — sudden drop relative to the recent past
+  # ======================================================================
+  # An absolute floor cannot catch a fall from 0.95 to 0.80: still above
+  # the floor, still a catastrophe. Anomaly detection on the same metric
+  # catches the shape of the change rather than its level.
+  #
+  # This is the alarm that fires on a Saturday morning after a Friday
+  # evening model swap.
+
+  ToolSelectionAnomaly:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agent-${AgentName}-tool-selection-anomaly"
+      AlarmDescription: !Sub |
+        ToolSelectionAccuracy for ${AgentName} has deviated sharply from its
+        recent band. Check for a deploy, a model version change, or a tool
+        definition edit in the last 24 hours.
+      ComparisonOperator: LessThanLowerThreshold
+      EvaluationPeriods: 2
+      ThresholdMetricId: ad1
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopicArn
+      Metrics:
+        - Id: m1
+          MetricStat:
+            Metric:
+              Namespace: Bedrock-AgentCore/Evaluations
+              MetricName: EvaluationScore
+              Dimensions:
+                - Name: AgentName
+                  Value: !Ref AgentName
+                - Name: EvaluatorId
+                  Value: Builtin.ToolSelectionAccuracy
+            Period: 3600
+            Stat: Average
+          ReturnData: true
+        - Id: ad1
+          Expression: ANOMALY_DETECTION_BAND(m1, 2)
+          Label: ToolSelectionAccuracy expected band
+          ReturnData: true
+
+  HelpfulnessAnomaly:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "agent-${AgentName}-helpfulness-anomaly"
+      AlarmDescription: !Sub |
+        Helpfulness for ${AgentName} has deviated sharply from its recent band.
+      ComparisonOperator: LessThanLowerThreshold
+      EvaluationPeriods: 3
+      ThresholdMetricId: ad1
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopicArn
+      Metrics:
+        - Id: m1
+          MetricStat:
+            Metric:
+              Namespace: Bedrock-AgentCore/Evaluations
+              MetricName: EvaluationScore
+              Dimensions:
+                - Name: AgentName
+                  Value: !Ref AgentName
+                - Name: EvaluatorId
+                  Value: Builtin.Helpfulness
+            Period: 3600
+            Stat: Average
+          ReturnData: true
+        - Id: ad1
+          Expression: ANOMALY_DETECTION_BAND(m1, 2)
+          Label: Helpfulness expected band
+          ReturnData: true
+
+  # ======================================================================
+  # Shape 3 — the evaluation itself stopped
+  # ======================================================================
+  # The most important alarm in this file. A quality dashboard that stopped
+  # receiving data looks exactly like a quality dashboard with no problems.
+  # TreatMissingData: breaching is deliberate here and nowhere else.
+
+  # This alarm is built on a metric filter, not on an assumed native metric.
+  # It is the only alarm here with TreatMissingData: breaching, which means a
+  # wrong metric identity would make it fire permanently from stack creation.
+  # The results log group name and its JSON event format are documented, so a
+  # count of result events is something we can guarantee exists. See the
+  # METRIC IDENTITY note in the header.
+
+  EvaluationResultsMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !If
+        - UseDerivedLogGroup
+        - !Sub "/aws/bedrock-agentcore/evaluations/results/${OnlineEvaluationConfigId}"
+        - !Ref EvaluationLogGroup
+      # Every evaluation writes one result event carrying a score. Matching on
+      # the presence of an evaluation-result field counts results without
+      # depending on any particular evaluator's name.
+      FilterPattern: '{ $.event.name = "gen_ai.evaluation.result" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub "Custom/AgentCoreEvaluations/${AgentName}"
+          MetricName: EvaluationResultCount
+          MetricValue: "1"
+          # An explicit zero keeps the metric reporting during quiet periods,
+          # so "no results" is a real datapoint of 0 rather than missing data.
+          DefaultValue: 0
+          Unit: Count
+
+  EvaluationPipelineStalled:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: EvaluationResultsMetricFilter
+    Properties:
+      AlarmName: !Sub "agent-${AgentName}-evaluation-stalled"
+      AlarmDescription: !Sub |
+        No evaluation results have been recorded for ${AgentName} in
+        ${StalledAlarmThresholdHours} hour(s). The measurement pipeline is
+        broken: check the online evaluation configuration status
+        (executionStatus should be ENABLED), the sampling rate, agent traffic
+        volume, and whether observability instrumentation is still emitting
+        spans. Absence of data is not evidence of quality.
+      Namespace: !Sub "Custom/AgentCoreEvaluations/${AgentName}"
+      MetricName: EvaluationResultCount
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: !Ref StalledAlarmThresholdHours
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      # Deliberate here and nowhere else in this file. Safe because the metric
+      # above is produced by a metric filter this same stack creates, so it is
+      # guaranteed to exist once the log group does.
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref NotificationTopicArn
+
+  # ======================================================================
+  # Dashboard
+  # ======================================================================
+
+  QualityDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "agent-quality-${AgentName}"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["Bedrock-AgentCore/Evaluations", "EvaluationScore", "AgentName", "${AgentName}", "EvaluatorId", "Builtin.Helpfulness"],
+                  ["...", "Builtin.GoalSuccessRate"],
+                  ["...", "Builtin.ToolSelectionAccuracy"]
+                ],
+                "view": "timeSeries",
+                "stat": "Average",
+                "period": 3600,
+                "region": "${AWS::Region}",
+                "title": "Quality scores (hourly average)",
+                "yAxis": {"left": {"min": 0, "max": 1}}
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "metrics": [
+                  ["Custom/AgentCoreEvaluations/${AgentName}", "EvaluationResultCount"]
+                ],
+                "view": "timeSeries",
+                "stat": "Sum",
+                "period": 3600,
+                "region": "${AWS::Region}",
+                "title": "Evaluations recorded (is the pipeline alive?)"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  SustainedAlarms:
+    Value: !Sub "${HelpfulnessSustainedLow}, ${ToolSelectionSustainedLow}, ${GoalSuccessSustainedLow}"
+  AnomalyAlarms:
+    Value: !Sub "${ToolSelectionAnomaly}, ${HelpfulnessAnomaly}"
+  StalledAlarm:
+    Value: !Ref EvaluationPipelineStalled
+  DashboardName:
+    Value: !Sub "agent-quality-${AgentName}"
+  EvaluationResultsLogGroup:
+    Description: Log group the stalled-detection metric filter reads from.
+    Value: !If
+      - UseDerivedLogGroup
+      - !Sub "/aws/bedrock-agentcore/evaluations/results/${OnlineEvaluationConfigId}"
+      - !Ref EvaluationLogGroup
+  ScoreMetricConfirmationRequired:
+    Description: |
+      Confirm the real MetricName/Dimensions before trusting the score alarms.
+    Value: !Sub
+      - "aws cloudwatch list-metrics --namespace ${NS}"
+      - NS: "Bedrock-AgentCore/Evaluations"

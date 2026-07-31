@@ -1,0 +1,134 @@
+# .github/workflows/policy-validation.yml
+#
+# CI workflow for AgentCore Policy changes.
+# This runs on every PR that touches the policies/ folder.
+#
+# Pipeline:
+#   1. Cedar syntax validation (local, no AWS)
+#   2. pytest suite (local, no AWS)
+#   3. AWS automated reasoning validation (calls create_policy in dry-run)
+#   4. Decision diff against historical request corpus
+#
+# See Chapter 3 Section 3.7 of the AgentCore Playbook for the full explanation.
+
+name: Policy validation
+
+on:
+  pull_request:
+    paths:
+      - 'chapter-03/policies/**'
+      - 'chapter-03/tests/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write   # Needed for OIDC auth to AWS
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          # cedarpy's public API changed across minor versions (parse_policies
+          # was replaced by PolicySet.from_str, and Decision became a plain
+          # Enum). Pin to the version this workflow is written against so a
+          # future upstream release doesn't silently break the steps below.
+          pip install "cedarpy==4.8.7" pytest boto3
+          # AgentCore CLI for the AWS-side validation
+          npm install -g @aws/agentcore
+
+      # ----------------------------------------------------------------
+      # 1. Cedar syntax validation (fast, local)
+      # ----------------------------------------------------------------
+      - name: Validate Cedar syntax
+        env:
+          # Defaults match the values this step used to hardcode, so behavior
+          # is unchanged if these aren't set. Override via repo/org "vars" to
+          # validate against your real Gateway ARN instead of a dummy one.
+          REGION: ${{ vars.AGENTCORE_REGION }}
+          ACCOUNT: ${{ vars.AGENTCORE_ACCOUNT }}
+          GATEWAY_ID: ${{ vars.AGENTCORE_GATEWAY_ID }}
+        run: |
+          export REGION="${REGION:-us-east-1}"
+          export ACCOUNT="${ACCOUNT:-111122223333}"
+          export GATEWAY_ID="${GATEWAY_ID:-ci-validation}"
+          for policy in chapter-03/policies/*.cedar; do
+            echo "Validating $policy"
+            python -c "
+          import cedarpy, os, sys
+          text = open('$policy').read()
+          # Substitute placeholder ARN so syntax check has something concrete.
+          # REGION/ACCOUNT/GATEWAY_ID come from the environment (see README);
+          # the defaults below match the values this step used to hardcode,
+          # so behavior is unchanged when they are unset.
+          region = os.environ.get('REGION', 'us-east-1')
+          account = os.environ.get('ACCOUNT', '111122223333')
+          gateway_id = os.environ.get('GATEWAY_ID', 'ci-validation')
+          text = text.replace(
+              'arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID',
+              f'arn:aws:bedrock-agentcore:{region}:{account}:gateway/{gateway_id}'
+          )
+          try:
+              cedarpy.PolicySet.from_str(text)
+          except Exception as e:
+              print(f'SYNTAX ERROR in $policy: {e}')
+              sys.exit(1)
+          "
+          done
+
+      # ----------------------------------------------------------------
+      # 2. Local pytest suite
+      # ----------------------------------------------------------------
+      - name: Run policy unit tests
+        run: |
+          cd chapter-03/tests
+          pytest -v --tb=short
+
+      # ----------------------------------------------------------------
+      # 3. AWS-side validation via create_policy (FAIL_ON_ANY_FINDINGS)
+      # ----------------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_POLICY_CI_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Validate against AWS automated reasoning
+        env:
+          STAGING_POLICY_ENGINE_ID: ${{ secrets.STAGING_POLICY_ENGINE_ID }}
+          STAGING_GATEWAY_ARN: ${{ secrets.STAGING_GATEWAY_ARN }}
+        run: |
+          for policy in chapter-03/policies/*.cedar; do
+            policy_name=$(basename "$policy" .cedar)
+            echo "Submitting $policy_name to AWS for automated reasoning validation"
+            python chapter-03/ci/submit_for_validation.py \
+              --policy-file "$policy" \
+              --policy-name "$policy_name" \
+              --engine-id "$STAGING_POLICY_ENGINE_ID" \
+              --gateway-arn "$STAGING_GATEWAY_ARN" \
+              --validation-mode FAIL_ON_ANY_FINDINGS \
+              --dry-run
+          done
+
+      # ----------------------------------------------------------------
+      # 4. Decision diff against historical request corpus
+      # ----------------------------------------------------------------
+      - name: Diff decisions against historical corpus
+        run: |
+          # Replays a corpus of historical requests (anonymized) through the
+          # new policy bundle and the old one, and reports any decisions
+          # that flipped. A human reviewer must sign off on any flips before
+          # merge is allowed.
+          python chapter-03/ci/decision_diff.py \
+            --corpus chapter-03/tests/historical-corpus.jsonl \
+            --new-policies chapter-03/policies/ \
+            --baseline-policies "main:chapter-03/policies/" \
+            --fail-on-flip-without-annotation

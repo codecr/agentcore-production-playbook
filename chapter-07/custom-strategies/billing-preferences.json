@@ -1,0 +1,31 @@
+{
+  "_comment": "Custom extraction/consolidation override for the Acme SaaS billing-context user preference strategy. Accompanies Chapter 7 Section 7.5 of 'AgentCore in Production: The Operator's Playbook'.",
+  "_purpose": "The built-in User Preference strategy extracts general preferences (communication style, language, response format). For an agent focused on a specific domain like billing/subscriptions, the broad extraction captures too much noise. This override narrows the extraction to billing-specific preferences only.",
+  "_when_to_use": "Apply this when the agent's domain is narrow enough that general user preferences are not useful. For a general-purpose support agent, use the built-in default. For a billing-specialist agent, use this override to focus extraction on what matters.",
+  "_cost_note": "Custom strategies bill at the lower storage rate ($0.25/unit instead of $0.75) because you provide your own model inference. Choose a Haiku-class model for extraction and consolidation; the task is simple enough that Sonnet is overkill.",
+  "_shape_note": "This mirrors the real MemoryStrategyInput.customMemoryStrategy shape accepted by the bedrock-agentcore-control CreateMemory/UpdateMemory API (field names are camelCase, not the CloudFormation PascalCase used in memory/acme-support-memory.yaml). A userPreferenceOverride configuration requires BOTH an extraction block and a consolidation block — each needs appendToPrompt and modelId. The namespace uses {actorId}, matching the actor_id = f'{tenant_id}/{user_id}' convention in utils/memory_helpers.py; there is no {tenantId} or {userId} placeholder in the real API.",
+
+  "customMemoryStrategy": {
+    "name": "AcmeBillingPreferences",
+    "description": "Billing-specific user preferences only (invoice format, payment method choices, communication cadence for billing topics).",
+
+    "namespaces": [
+      "users/{actorId}/billing-preferences"
+    ],
+
+    "configuration": {
+      "userPreferenceOverride": {
+        "extraction": {
+          "appendToPrompt": "You are a memory extraction agent specializing in billing-related user preferences for a B2B SaaS support system.\n\nExtract ONLY preferences that fall into these specific categories:\n\n1. INVOICE FORMAT preferences:\n   - Preferred invoice delivery (email, portal, mail)\n   - Preferred invoice format (PDF, CSV, both)\n   - Preferred invoice grouping (per-product, per-month, consolidated)\n   - Preferred invoice reference style (full ID vs. short code)\n\n2. PAYMENT preferences:\n   - Preferred payment method type (ACH, wire, credit card, NET-30)\n   - Preferred billing cycle (monthly, quarterly, annual)\n   - Auto-pay preferences (enabled/disabled, threshold amounts)\n\n3. BILLING COMMUNICATION preferences:\n   - Notification cadence for upcoming invoices (X days before, none)\n   - Preferred contact for billing escalations (the user vs. another role)\n   - Preferred handling of overage charges (auto-approve below threshold, always confirm)\n   - Preferred language for billing communications (often differs from general)\n\n4. ESCALATION preferences for billing disputes:\n   - Preferred resolution path (immediate credit, dispute review, etc.)\n   - Tolerance for delays (acceptable response time)\n\nDO NOT extract:\n- General communication style preferences (bullet vs. prose) — those belong to a different strategy\n- Product feature preferences\n- UI/UX preferences\n- Technical configuration preferences\n- Preferences about non-billing topics, even if mentioned in the conversation\n\nIf the conversation contains no billing-related preferences, return an empty list. Quality over quantity — false-positive extractions pollute the namespace.",
+          "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        },
+        "consolidation": {
+          "appendToPrompt": "Consolidate the billing-preference records extracted for this user into one current record per category (invoice format, payment method, billing communication, escalation). When a newer statement conflicts with an older one, keep the newer statement and drop the stale one. Do not merge preferences across categories — keep invoice format, payment method, billing communication, and escalation preferences as distinct records, not blended into a single summary.",
+          "modelId": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        }
+      }
+    }
+  },
+
+  "_deployment_note": "The `customMemoryStrategy` object above is one entry for the `memoryStrategies` list accepted by the bedrock-agentcore-control CreateMemory/UpdateMemory API — e.g. `{'memoryStrategies': [{'customMemoryStrategy': <the object above>}]}`. It is not a document to paste whole into the AWS console: the console's Memory → Strategies → Add custom strategy → 'Built-in with override' flow wants only the extraction/consolidation prompt text (the appendToPrompt strings above), pasted into their respective fields, plus the model selection and namespace — not this JSON wrapper. Pricing model: storage at $0.25/unit + your own Bedrock inference at Haiku rates."
+}

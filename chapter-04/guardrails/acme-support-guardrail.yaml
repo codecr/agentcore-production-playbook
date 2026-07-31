@@ -1,0 +1,185 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Reference Bedrock Guardrails configuration for Acme SaaS customer support agent.
+  Accompanies Chapter 4 of "AgentCore in Production: The Operator's Playbook".
+
+  This Guardrail combines all six safeguard types tuned for a customer-facing
+  multi-tenant agent. Adjust thresholds and lists based on your specific use case
+  and review Section 4.4 of the book for the rationale behind each setting.
+
+Parameters:
+  GuardrailName:
+    Type: String
+    Default: acme-support-guardrail
+    Description: Name for the Guardrail resource
+
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, production]
+    Default: staging
+    Description: Environment tag for resource tracking
+
+  BlockedInputMessage:
+    Type: String
+    Default: "I cannot process this request because it appears to violate our content policy. If you believe this is in error, please contact support."
+    Description: Message shown when user input is blocked
+
+  BlockedOutputMessage:
+    Type: String
+    Default: "I cannot complete this response because it would contain content that violates our policy. Please rephrase your question or contact support for help."
+    Description: Message shown when model output is blocked
+
+Resources:
+
+  AcmeSupportGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name: !Ref GuardrailName
+      Description: |
+        Reference Guardrail for Acme SaaS customer support agent.
+        Covers harmful content, prompt attacks, PII protection, denied topics,
+        and contextual grounding. Tuned for customer-facing multi-tenant use.
+      BlockedInputMessaging: !Ref BlockedInputMessage
+      BlockedOutputsMessaging: !Ref BlockedOutputMessage
+
+      # =============================================================
+      # Concern A: Harmful content (content filters + word filters)
+      # =============================================================
+      ContentPolicyConfig:
+        FiltersConfig:
+          - Type: SEXUAL
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          - Type: VIOLENCE
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          - Type: HATE
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          - Type: INSULTS
+            InputStrength: MEDIUM    # Lower because some legitimate content may use sharp language
+            OutputStrength: HIGH
+          - Type: MISCONDUCT
+            InputStrength: HIGH
+            OutputStrength: HIGH
+          # Prompt attack detection (Concern B) — input only
+          - Type: PROMPT_ATTACK
+            InputStrength: HIGH
+            OutputStrength: NONE
+
+      WordPolicyConfig:
+        WordsConfig:
+          # Per-organization blocked terms. Replace with terms relevant to
+          # your business. Examples below are placeholders.
+          - Text: "competitor-name-1"
+          - Text: "internal-codename-x"
+        ManagedWordListsConfig:
+          - Type: PROFANITY    # AWS-managed list of profanity terms
+
+      # =============================================================
+      # Concern C: PII protection
+      # =============================================================
+      SensitiveInformationPolicyConfig:
+        PiiEntitiesConfig:
+          # Built-in PII types — most common in customer support
+          - Type: EMAIL
+            Action: ANONYMIZE
+          - Type: PHONE
+            Action: ANONYMIZE
+          - Type: US_SOCIAL_SECURITY_NUMBER
+            Action: BLOCK    # Always block, never anonymize — too sensitive
+          - Type: CREDIT_DEBIT_CARD_NUMBER
+            Action: BLOCK
+          - Type: CREDIT_DEBIT_CARD_CVV
+            Action: BLOCK
+          - Type: IP_ADDRESS
+            Action: ANONYMIZE
+          - Type: AWS_ACCESS_KEY
+            Action: BLOCK
+          - Type: AWS_SECRET_KEY
+            Action: BLOCK
+          - Type: ADDRESS
+            Action: ANONYMIZE
+        RegexesConfig:
+          # Acme-specific patterns. Replace with your organization's patterns.
+          - Name: AcmeCustomerCode
+            Description: "Internal Acme customer code (format: ACM-XXXXXX-XX)"
+            Pattern: '\bACM-[A-Z0-9]{6}-[A-Z0-9]{2}\b'
+            Action: ANONYMIZE
+          - Name: AcmeInternalAPIKey
+            Description: "Acme internal API key prefix"
+            Pattern: '\bAKACME[A-Z0-9]{32}\b'
+            Action: BLOCK
+
+      # =============================================================
+      # Concern D: Topic restriction
+      # =============================================================
+      TopicPolicyConfig:
+        TopicsConfig:
+          - Name: LegalAdvice
+            Definition: "Specific legal advice that could be relied upon for legal decisions. Includes interpretations of contracts, employment law, immigration matters, and rights in specific jurisdictions."
+            Type: DENY
+            Examples:
+              - "What are my rights if my employer fires me?"
+              - "Can I sue my landlord for this?"
+              - "Is this contract clause legal in California?"
+          - Name: FinancialAdvice
+            Definition: "Specific investment advice, tax recommendations, or financial planning guidance that could be relied upon for financial decisions."
+            Type: DENY
+            Examples:
+              - "Should I invest in this stock?"
+              - "How should I structure my retirement portfolio?"
+              - "What's the best tax strategy for my situation?"
+          - Name: MedicalDiagnosis
+            Definition: "Specific medical diagnoses, treatment recommendations, or prescription guidance for individual symptoms."
+            Type: DENY
+            Examples:
+              - "What disease do I have based on these symptoms?"
+              - "Should I take this medication?"
+              - "Is this dose safe for me?"
+
+      # =============================================================
+      # Concern E: Hallucination prevention (contextual grounding)
+      # =============================================================
+      ContextualGroundingPolicyConfig:
+        FiltersConfig:
+          - Type: GROUNDING
+            Threshold: 0.75    # Start at 0.7-0.75; tune up based on false positives
+          - Type: RELEVANCE
+            Threshold: 0.65    # Slightly lower — relevance is harder to score
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: AcmePlatformTeam
+        - Key: Chapter
+          Value: "playbook-chapter-04"
+
+  # =============================================================
+  # Create a numbered version for production deployment
+  # =============================================================
+  AcmeSupportGuardrailVersion:
+    Type: AWS::Bedrock::GuardrailVersion
+    Properties:
+      GuardrailIdentifier: !Ref AcmeSupportGuardrail
+      Description: !Sub "Initial production version - ${Environment}"
+
+Outputs:
+  GuardrailId:
+    Description: ID of the created Guardrail
+    Value: !Ref AcmeSupportGuardrail
+    Export:
+      Name: !Sub "${AWS::StackName}-GuardrailId"
+
+  GuardrailArn:
+    Description: ARN of the Guardrail
+    Value: !GetAtt AcmeSupportGuardrail.GuardrailArn
+    Export:
+      Name: !Sub "${AWS::StackName}-GuardrailArn"
+
+  GuardrailVersion:
+    Description: Version number of the published Guardrail
+    Value: !GetAtt AcmeSupportGuardrailVersion.Version
+    Export:
+      Name: !Sub "${AWS::StackName}-GuardrailVersion"

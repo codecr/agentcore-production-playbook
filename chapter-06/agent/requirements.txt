@@ -1,0 +1,8 @@
+# Requirements for the Acme SaaS runbook agent container.
+# Per runbook_agent.py's own module docstring, plus boto3 (bedrock-agentcore
+# already depends on boto3/botocore, but pinning it here documents the
+# direct dependency for anyone adapting this container to a different agent).
+bedrock-agentcore
+strands-agents
+strands-agents-tools
+boto3

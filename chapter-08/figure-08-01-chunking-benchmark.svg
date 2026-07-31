@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 680 740" role="img" font-family="-apple-system, system-ui, sans-serif">
+  <title>Figure 8.1 — Chunking strategy benchmark and decision flow</title>
+  <desc>Top panel shows the Correctness scores across five chunking strategies, revealing a sharp cliff between the top three (custom, hierarchical, fixed at 0.88-0.94) and the bottom two (none, semantic at 0.16-0.26) caused by ingestion failures rather than chunking quality. Bottom panel is a decision flowchart for choosing a strategy based on corpus characteristics.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#444" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <style>
+    .th { font-size: 14px; font-weight: 500; fill: #1A1A1A; }
+    .ts { font-size: 12px; fill: #444; }
+    .axis { stroke: #888; stroke-width: 0.5; }
+    .good-fill { fill: #C0DD97; stroke: #639922; }
+    .good-text { fill: #173404; }
+    .bad-fill { fill: #F7C1C1; stroke: #A32D2D; }
+    .bad-text { fill: #501313; }
+    .neutral-fill { fill: #D3D1C7; stroke: #5F5E5A; }
+    .neutral-text { fill: #2C2C2A; }
+    .warn-fill { fill: #FAC775; stroke: #854F0B; }
+    .warn-text { fill: #412402; }
+    .cliff { stroke: #E24B4A; stroke-width: 1; stroke-dasharray: 4 4; }
+    .arr { stroke: #444; stroke-width: 1.5; fill: none; }
+  </style>
+
+  <text class="th" x="340" y="28" text-anchor="middle" font-size="17">Chunking benchmark: five strategies, one corpus</text>
+  <text class="ts" x="340" y="48" text-anchor="middle" font-style="italic">Correctness scores. Two groups separated by ingestion success.</text>
+
+  <!-- Y-axis -->
+  <line x1="120" y1="90" x2="120" y2="290" class="axis"/>
+  <text class="ts" x="110" y="294" text-anchor="end">0.0</text>
+  <text class="ts" x="110" y="254" text-anchor="end">0.2</text>
+  <text class="ts" x="110" y="214" text-anchor="end">0.4</text>
+  <text class="ts" x="110" y="174" text-anchor="end">0.6</text>
+  <text class="ts" x="110" y="134" text-anchor="end">0.8</text>
+  <text class="ts" x="110" y="94" text-anchor="end">1.0</text>
+  <line x1="120" y1="290" x2="640" y2="290" class="axis"/>
+
+  <!-- Top group (green) -->
+  <rect x="155" y="102" width="80" height="188" rx="2" class="good-fill" stroke-width="0.5"/>
+  <text class="th good-text" x="195" y="308" text-anchor="middle">custom</text>
+  <text class="ts" x="195" y="324" text-anchor="middle">0.940</text>
+
+  <rect x="255" y="106" width="80" height="184" rx="2" class="good-fill" stroke-width="0.5"/>
+  <text class="th good-text" x="295" y="308" text-anchor="middle">hierarchical</text>
+  <text class="ts" x="295" y="324" text-anchor="middle">0.920</text>
+
+  <rect x="355" y="114" width="80" height="176" rx="2" class="good-fill" stroke-width="0.5"/>
+  <text class="th good-text" x="395" y="308" text-anchor="middle">fixed</text>
+  <text class="ts" x="395" y="324" text-anchor="middle">0.880</text>
+
+  <!-- Bottom group (red) -->
+  <rect x="455" y="238" width="80" height="52" rx="2" class="bad-fill" stroke-width="0.5"/>
+  <text class="th bad-text" x="495" y="308" text-anchor="middle">none</text>
+  <text class="ts" x="495" y="324" text-anchor="middle">0.261</text>
+
+  <rect x="555" y="258" width="80" height="32" rx="2" class="bad-fill" stroke-width="0.5"/>
+  <text class="th bad-text" x="595" y="308" text-anchor="middle">semantic</text>
+  <text class="ts" x="595" y="324" text-anchor="middle">0.160</text>
+
+  <!-- Cliff annotation -->
+  <line x1="440" y1="114" x2="440" y2="238" class="cliff"/>
+  <text class="ts" x="448" y="180" font-style="italic" font-weight="500">0.619</text>
+  <text class="ts" x="448" y="196" font-style="italic">cliff</text>
+
+  <!-- Legend -->
+  <rect x="160" y="350" width="14" height="14" rx="2" class="good-fill" stroke-width="0.5"/>
+  <text class="ts" x="182" y="361">Ingested corpus successfully</text>
+
+  <rect x="380" y="350" width="14" height="14" rx="2" class="bad-fill" stroke-width="0.5"/>
+  <text class="ts" x="402" y="361">Ingestion failures dominate</text>
+
+  <!-- Decision flow -->
+  <text class="th" x="340" y="408" text-anchor="middle" font-size="15">Decision flow: which strategy for your corpus?</text>
+
+  <rect x="260" y="430" width="160" height="44" rx="8" class="neutral-fill" stroke-width="0.5"/>
+  <text class="th neutral-text" x="340" y="452" text-anchor="middle">Audit corpus</text>
+  <text class="ts" x="340" y="468" text-anchor="middle">List file sizes</text>
+
+  <line x1="340" y1="474" x2="340" y2="498" class="arr" marker-end="url(#arrow)"/>
+
+  <rect x="240" y="502" width="200" height="44" rx="8" class="warn-fill" stroke-width="0.5"/>
+  <text class="th warn-text" x="340" y="524" text-anchor="middle">Any file &gt; 1MB?</text>
+  <text class="ts" x="340" y="540" text-anchor="middle">Semantic rejects these</text>
+
+  <line x1="240" y1="524" x2="170" y2="568" class="arr" marker-end="url(#arrow)"/>
+  <text class="ts" x="170" y="552" text-anchor="middle">yes</text>
+
+  <line x1="440" y1="524" x2="510" y2="568" class="arr" marker-end="url(#arrow)"/>
+  <text class="ts" x="510" y="552" text-anchor="middle">no</text>
+
+  <rect x="50" y="572" width="240" height="64" rx="8" class="good-fill" stroke-width="0.5"/>
+  <text class="th good-text" x="170" y="594" text-anchor="middle">FIXED_SIZE (default)</text>
+  <text class="ts" x="170" y="612" text-anchor="middle">max_tokens=512, overlap=20%</text>
+  <text class="ts" x="170" y="627" text-anchor="middle" font-style="italic">or HIERARCHICAL for nested docs</text>
+
+  <rect x="390" y="572" width="240" height="44" rx="8" class="warn-fill" stroke-width="0.5"/>
+  <text class="th warn-text" x="510" y="594" text-anchor="middle">Files &lt; 50K chars each?</text>
+  <text class="ts" x="510" y="610" text-anchor="middle">FAQ / ticket / product card?</text>
+
+  <line x1="430" y1="616" x2="370" y2="660" class="arr" marker-end="url(#arrow)"/>
+  <text class="ts" x="370" y="640" text-anchor="middle">yes</text>
+
+  <line x1="590" y1="616" x2="590" y2="660" class="arr" marker-end="url(#arrow)"/>
+  <text class="ts" x="608" y="640" text-anchor="middle">no</text>
+
+  <rect x="280" y="664" width="180" height="44" rx="8" class="good-fill" stroke-width="0.5"/>
+  <text class="th good-text" x="370" y="686" text-anchor="middle">NONE or SEMANTIC</text>
+  <text class="ts" x="370" y="702" text-anchor="middle">Either works on small files</text>
+
+  <rect x="500" y="664" width="180" height="44" rx="8" class="good-fill" stroke-width="0.5"/>
+  <text class="th good-text" x="590" y="686" text-anchor="middle">FIXED_SIZE</text>
+  <text class="ts" x="590" y="702" text-anchor="middle">Universally viable</text>
+
+  <text class="ts" x="340" y="730" text-anchor="middle" font-style="italic">Figure 8.1 — When in doubt, FIXED_SIZE. The 0.06-point gap with CUSTOM is rarely worth the operational complexity.</text>
+</svg>
