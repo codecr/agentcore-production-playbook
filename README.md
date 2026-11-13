@@ -4,7 +4,7 @@ This is the companion code repository for **_AgentCore in Production: The
 Operator's Playbook_**.
 
 📖 **Get the book:** second edition, paperback ISBN 979-8142224118
-([Amazon](https://kdp.amazon.com/amazon-dp-action/us/dualbookshelf.marketplacelink/B0HRJ4XMP2)).
+([Amazon](https://www.amazon.com/dp/B0HRJ4XMP2)).
 
 **Editions.** `main` carries the code for the second edition (November 2026),
 also tagged `v2.0-second-edition`. The code exactly as published with the first
