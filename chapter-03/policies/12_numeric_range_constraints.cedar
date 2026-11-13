@@ -1,17 +1,19 @@
 // Policy: 12_numeric_range_constraints
 // Category: Input validation
-// Intent: Bound numeric inputs to sane ranges. Refund amounts cannot be
-//         negative or above $50,000 regardless of role. Search result limits
-//         cannot exceed 1000. These are sanity bounds enforced at the policy
-//         layer in addition to whatever the tool itself validates.
+// Intent: Sanity bounds on refund amounts regardless of role: never below 1,
+//         never above 50,000.
+// 2nd edition change: now a forbid. As a permit (1st edition), it granted
+//   any caller refunds up to 50,000, which silently overrode the role caps
+//   in policy 08: permits add up, so the most generous one wins. A sanity
+//   bound has to subtract, and only forbid subtracts.
 
-permit (
+forbid (
   principal,
   action == AgentCore::Action::"billing___process_refund",
   resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID"
 )
-when {
+unless {
   context.input has amount &&
-  context.input.amount > 0 &&
+  context.input.amount >= 1 &&
   context.input.amount <= 50000
 };

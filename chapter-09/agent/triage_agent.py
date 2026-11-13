@@ -9,8 +9,10 @@ This file deliberately contains BOTH implementations of the same agent:
                          and a keyword fallback. This is the version that
                          mislabeled a P1 outage as P3 in Section 9.1.
 
-    TriageAgentAfter   — schema-as-contract. One json.loads. No fallback,
-                         because there is no parse failure to fall back from.
+    TriageAgentAfter   — schema-as-contract. A stopReason check, one
+                         json.loads, and the post-parse range check. No
+                         fallback, because there is no parse failure to fall
+                         back from.
 
 Keeping them side by side is the point. The diff between the two classes is
 the chapter's argument in code.
@@ -26,27 +28,48 @@ import re
 from typing import Any, Optional
 
 import boto3
+from botocore.config import Config
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from schemas.production_schemas import TRIAGE_SCHEMA, as_output_config  # noqa: E402
+from utils.schema_registry import check_ranges  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
-# Structured Outputs requires a supported model. Nova and Titan are not
-# supported as of mid-2026; Haiku 4.5 is the cheapest Anthropic model that is.
+# Structured Outputs requires a supported model. Since 2026-10-20 every
+# Anthropic Claude model on Bedrock supports it; Amazon Nova and Titan are not
+# on AWS's provider list (see console-test CT-09-05). Check the model card for
+# your Region and inference profile: Haiku 4.5 is excluded on the India
+# (in.anthropic) geographic profile, for example.
 MODEL_ID_AFTER = os.environ.get(
-    "TRIAGE_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    "TRIAGE_MODEL_ID", "us.anthropic.claude-haiku-5-5"
 )
 
 # The "before" version ran on a model without Structured Outputs support,
 # which is precisely why it needed the defensive scaffolding.
 MODEL_ID_BEFORE = os.environ.get("TRIAGE_MODEL_ID_LEGACY", "amazon.nova-lite-v1:0")
 
-bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+# The first request against a new schema compiles a grammar, documented at up
+# to ~90 s. AWS recommends a read timeout of at least 120 s.
+bedrock = boto3.client(
+    "bedrock-runtime",
+    region_name=AWS_REGION,
+    config=Config(read_timeout=120),
+)
+
+
+class TriageIncomplete(RuntimeError):
+    """Raised when a schema-constrained response cannot be trusted.
+
+    Either generation stopped before end_turn (max_tokens truncation, a
+    Guardrail intervention, ...) or the parsed result failed a range check.
+    It is a loud failure on purpose: catch it, emit a metric, and route the
+    ticket to a human. Never substitute a guessed result.
+    """
 
 
 # =========================================================================
@@ -236,17 +259,29 @@ mentions legal or regulatory exposure, or when your confidence is below 0.7.
             modelId=MODEL_ID_AFTER,
             system=[{"text": self.SYSTEM_PROMPT}],
             messages=[{"role": "user", "content": [{"text": ticket_text}]}],
-            inferenceConfig={"temperature": 0.0, "maxTokens": 1024},
+            # No temperature: Claude 5.x models reject temperature and top_p.
+            inferenceConfig={"maxTokens": 1024},
             outputConfig=as_output_config(
                 TRIAGE_SCHEMA,
                 name="ticket_triage",
                 description="Triage classification for an inbound support ticket.",
             ),
         )
-        # No extraction. No validation. No fallback. The response either
-        # conforms to the schema or the API call failed, and a failed API
-        # call is a loud failure that pages someone.
-        return json.loads(response["output"]["message"]["content"][0]["text"])
+        # The schema guarantees a complete response only. If generation
+        # stopped for any other reason (max_tokens truncation returns
+        # incomplete JSON even with a schema), fail loudly.
+        if response["stopReason"] != "end_turn":
+            raise TriageIncomplete(f"stopReason={response['stopReason']}")
+
+        # No extraction, no structural validation, no fallback.
+        result = json.loads(response["output"]["message"]["content"][0]["text"])
+
+        # Ranges are business rules Bedrock will not accept in a schema
+        # (minimum/maximum/maxLength return HTTP 400), so they are checked here.
+        violations = check_ranges("ticket_triage", result)
+        if violations:
+            raise TriageIncomplete("; ".join(violations))
+        return result
 
 
 # =========================================================================

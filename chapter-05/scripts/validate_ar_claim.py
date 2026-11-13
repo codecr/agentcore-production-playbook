@@ -28,6 +28,19 @@ How to use:
 
        python validate_ar_claim.py --corpus tests/test-claims.jsonl
 
+    5. Print the raw finding JSON (the artifact Section 5.1 shows):
+
+       python validate_ar_claim.py "The applicant qualifies for the Premium tier."            --premises "Applicant has credit score 720, DTI 30%, ..." --raw
+
+Automated Reasoning checks run in DETECT MODE ONLY. ApplyGuardrail returns
+findings; it never blocks or rewrites an answer because of them. The code
+that calls this script is the enforcement point (Chapter 5, Section 5.3).
+
+Revised for the 2nd edition (October 2026): adds NOT_EVALUATED for responses
+that carry no Automated Reasoning assessment (automatedReasoningPolicyUnits
+== 0 is a silent skip, not an error), surfaces the units consumed, and
+collects contradicting/supporting rule IDs for the audit log.
+
 Requires:
     pip install boto3
 """
@@ -48,6 +61,9 @@ import boto3
 
 GUARDRAIL_ID = os.environ.get("GUARDRAIL_ID", "")
 GUARDRAIL_VERSION = os.environ.get("GUARDRAIL_VERSION", "DRAFT")
+# AR checks are available (October 2026) in us-east-1, us-east-2, us-west-2,
+# eu-central-1, eu-west-1, eu-west-3 and ap-southeast-2. Check the AWS docs
+# ("What are Automated Reasoning checks") before choosing a Region.
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 bedrock_runtime = boto3.client("bedrock-runtime", region_name=AWS_REGION)
@@ -68,6 +84,12 @@ VALID_OUTCOMES = {
     "TOO_COMPLEX",
     "NO_TRANSLATIONS",
 }
+
+# Not an AR outcome: our own sentinel for "the response carried no Automated
+# Reasoning assessment at all" (no AR policy on the guardrail, wrong guardrail
+# version, or content that never reached the AR policy). The API reports this
+# only as automatedReasoningPolicyUnits == 0 -- no error is raised.
+NOT_EVALUATED = "NOT_EVALUATED"
 
 # ApplyGuardrail's `finding` object is a discriminated union: exactly one
 # of these keys is present. Maps the wire key to our display constant.
@@ -174,6 +196,9 @@ class ARResult:
     premises: Optional[str] = None
     explanation: Optional[str] = None
     untranslated_claims: list = field(default_factory=list)
+    rule_ids: list = field(default_factory=list)
+    ar_units: int = 0
+    raw_findings: list = field(default_factory=list)
     raw_response: dict = field(default_factory=dict)
 
     @property
@@ -195,7 +220,17 @@ class ARResult:
             "TRANSLATION_AMBIGUOUS",
             "TOO_COMPLEX",
             "NO_TRANSLATIONS",
+            NOT_EVALUATED,
         }
+
+    @property
+    def safe_to_serve(self) -> bool:
+        """VALID with nothing left unverified.
+
+        A VALID finding covers only the claims that were translated. Any
+        text listed under untranslatedClaims was not checked (Section 5.2).
+        """
+        return self.finding_type == "VALID" and not self.untranslated_claims
 
 
 # =========================================================================
@@ -286,10 +321,15 @@ def validate_claim(
     #
     # A single call can return multiple findings; report the worst
     # (most severe) one, per AWS's own aggregation guidance.
-    finding_type = "NO_TRANSLATIONS"
+    finding_type = NOT_EVALUATED
     explanation = None
     untranslated = []
+    rule_ids = []
+    raw_findings = []
     worst_severity = float("inf")
+    ar_units = int(
+        response.get("usage", {}).get("automatedReasoningPolicyUnits", 0) or 0
+    )
 
     for assessment in response.get("assessments", []):
         ar_policy = assessment.get("automatedReasoningPolicy")
@@ -302,6 +342,12 @@ def validate_claim(
                 continue  # Unrecognized shape; skip defensively.
 
             this_type = FINDING_TYPE_MAP[union_key]
+            raw_findings.append(finding)
+            data = finding[union_key]
+            for rule in (data.get("supportingRules", [])
+                         + data.get("contradictingRules", [])):
+                if rule.get("identifier"):
+                    rule_ids.append(rule["identifier"])
             this_explanation, this_untranslated = _explain_finding(
                 union_key, finding[union_key]
             )
@@ -319,6 +365,9 @@ def validate_claim(
         premises=premises,
         explanation=explanation,
         untranslated_claims=untranslated,
+        rule_ids=rule_ids,
+        ar_units=ar_units,
+        raw_findings=raw_findings,
         raw_response=response,
     )
 
@@ -411,6 +460,11 @@ def main() -> int:
         help="Optional premises that ground the claim.",
     )
     parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Print the raw AR finding objects as JSON.",
+    )
+    parser.add_argument(
         "--corpus",
         help="Path to a JSONL test corpus to run instead of a single claim.",
     )
@@ -437,8 +491,18 @@ def main() -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    if args.raw:
+        print(json.dumps(result.raw_findings, indent=2, default=str))
+        print()
+
     print(f"Finding:       {result.finding_type}")
     print(f"Certain?       {'yes' if result.is_certain else 'no — review'}")
+    print(f"AR units:      {result.ar_units}")
+    if result.finding_type == NOT_EVALUATED:
+        print("WARNING: no Automated Reasoning assessment in the response. "
+              "Check that the guardrail version has an AR policy attached.")
+    if result.rule_ids:
+        print(f"Rules:         {', '.join(result.rule_ids)}")
     if result.explanation:
         print(f"Explanation:   {result.explanation}")
     if result.untranslated_claims:

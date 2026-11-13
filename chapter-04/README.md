@@ -2,6 +2,11 @@
 
 This folder accompanies Chapter 4 of *AgentCore in Production: The Operator's Playbook*.
 
+> **2nd edition (October 2026).** Adds Gate 4 in the agent loop with
+> `InvokeGuardrailChecks` (June 16, 2026) and two Dogwood policies that run
+> Guardrails inside AgentCore Policy at the Gateway (June 17, 2026). See
+> Chapter 4, Sections 4.3 and 4.5.
+
 ## What's here
 
 ```
@@ -9,10 +14,39 @@ chapter-04/
 ├── guardrails/
 │   └── acme-support-guardrail.yaml     # CloudFormation reference config
 ├── utils/
-│   └── tag_user_input.py               # Dynamic input tagging utility
+│   ├── tag_user_input.py               # Input tagging (InvokeModel) and guardContent (Converse)
+│   └── tool_result_checks.py           # Gate 4 with InvokeGuardrailChecks (detect-only)
+├── policies/
+│   ├── gate3_forbid_prompt_injection_in_ticket_text.dogwood
+│   └── gate4_suppress_ssn_in_tool_output.dogwood
 └── tests/
     └── test_guardrail_corpus.py        # ApplyGuardrail-based test harness
 ```
+
+## Tiers, languages, and cost (October 2026)
+
+- Content filters and denied topics have Classic and Standard tiers (June
+  2025). Standard covers up to 60 languages and handles typos and context
+  better, and requires cross-Region inference through a guardrail profile.
+  Contextual grounding gained a Standard tier on October 20, 2026 for
+  conversational and reasoning answers; Classic grounding supports English,
+  French, and Spanish. The template below uses the default (Classic) tiers;
+  see the comment in the template to switch.
+- Each filter can use the action `NONE` (detect without blocking) for shadow
+  rollouts.
+- Pricing per 1,000 text units: content filters $0.15, denied topics $0.15,
+  built-in PII $0.10, contextual grounding $0.10, word filters and regex free.
+  `InvokeGuardrailChecks`: $0.07 content, $0.08 prompt attack, $0.10 PII.
+
+## Guardrails at the Gateway
+
+The files in `policies/` are AgentCore Policy statements (Dogwood) with
+`when guardrails { ... }` conditions. Submit them with
+`definition={"policy": {"statement": ...}}` (see
+`chapter-03/ci/submit_for_validation.py`). The Gateway execution role needs
+`bedrock:InvokeGuardrailChecks`. Available in seven Regions as of October
+2026 (us-east-1, us-east-2, us-west-2, ap-southeast-2, ap-northeast-1,
+eu-west-2, eu-north-1). Untested by the author.
 
 ## What this delivers
 
@@ -66,8 +100,10 @@ pytest tests/test_guardrail_corpus.py -v
 
 The harness uses the `ApplyGuardrail` API, which evaluates content against
 the Guardrail **without invoking any foundation model**. This makes the
-tests fast (no model latency), cheap (no token cost), deterministic, and
-portable across any model the Guardrail is later attached to.
+tests fast (no model latency), cheap (no token cost), and portable across
+any model the Guardrail is later attached to. The classifiers themselves are
+probabilistic, so a case near a threshold can flip between runs; keep those
+cases out of the blocking set or assert on ranges.
 
 ## Using the dynamic tagging utility
 
@@ -209,8 +245,8 @@ Four substitutions are needed before this is production-ready for your use:
    corpus has thirteen cases, including two contextual-grounding cases that
    send a `grounding_source` and a `query` alongside the answer under test —
    the only way the GROUNDING and RELEVANCE filters get anything to score.
-   A production-grade corpus typically has 50–200 cases reflecting real input
-   patterns from your traffic logs.
+   Grow it from real input patterns in your traffic logs and add a case
+   for every incident review.
 
 ## License
 

@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
 """
-submit_for_validation.py — Submit one Cedar policy to AgentCore's automated
-reasoning validation via the bedrock-agentcore-control `create_policy` API.
+submit_for_validation.py: Submit one Cedar or Dogwood policy to AgentCore's
+policy validation (the Cedar analyzer) via the bedrock-agentcore-control
+`create_policy` API.
+
+2nd edition (October 2026):
+  - *.cedar files go in definition={"cedar": {"statement": ...}};
+    *.dogwood files (temporal policies, guardrail conditions) go in
+    definition={"policy": {"statement": ...}}. cedarpy cannot parse Dogwood,
+    so AWS is the only validator for those files.
+  - create_policy is asynchronous: it returns 202 with status CREATING and
+    the validation verdict arrives later as ACTIVE or CREATE_FAILED with
+    statusReasons. This script now polls GetPolicy for the terminal status
+    and exits 1 on CREATE_FAILED. Treating the 202 as success was a bug.
+  - --enforcement-mode LOG_ONLY creates the policy in per-policy shadow mode
+    (decision logged, not enforced) inside an ENFORCE engine.
+  - Requires boto3 >= 1.43.100 (the "policy" definition member is newer than
+    the "cedar" one). The author tested parameter shapes, not live calls.
 
 Used by the "Validate against AWS automated reasoning" step in
 ci/policy-validation.yml (see Chapter 3 Section 3.7). With --dry-run, no AWS
@@ -16,6 +31,7 @@ bedrock-agentcore-control:CreatePolicy on the target policy engine.
 import argparse
 import re
 import sys
+import time
 
 
 # create_policy's `name` parameter must match r'[A-Za-z][A-Za-z0-9_]*' (per
@@ -64,6 +80,12 @@ def parse_args(argv=None):
         help="validationMode passed to create_policy.",
     )
     parser.add_argument(
+        "--enforcement-mode",
+        default="ACTIVE",
+        choices=["ACTIVE", "LOG_ONLY"],
+        help="Per-policy enforcementMode passed to create_policy.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print what would be submitted and exit without calling AWS.",
@@ -87,11 +109,13 @@ def main(argv=None) -> int:
         )
 
     api_name = sanitize_policy_name(args.policy_name)
+    definition_key = "policy" if args.policy_file.endswith(".dogwood") else "cedar"
 
     if args.dry_run:
         print(f"[dry-run] Would submit policy '{args.policy_name}' (as '{api_name}') "
               f"to engine '{args.engine_id}' for gateway '{args.gateway_arn}'")
-        print(f"[dry-run] validationMode={args.validation_mode}")
+        print(f"[dry-run] validationMode={args.validation_mode} "
+              f"enforcementMode={args.enforcement_mode} definition={definition_key}")
         print(f"[dry-run] statement ({len(statement)} chars):")
         print(statement)
         return 0
@@ -101,12 +125,28 @@ def main(argv=None) -> int:
     client = boto3.client("bedrock-agentcore-control")
     response = client.create_policy(
         name=api_name,
-        definition={"cedar": {"statement": statement}},
+        definition={definition_key: {"statement": statement}},
         validationMode=args.validation_mode,
+        enforcementMode=args.enforcement_mode,
         policyEngineId=args.engine_id,
     )
-    print(f"Submitted '{args.policy_name}' as '{api_name}': {response}")
-    return 0
+    policy_id = response["policyId"]
+    print(f"Submitted '{args.policy_name}' as '{api_name}' ({policy_id}); waiting for verdict")
+
+    for _ in range(60):
+        policy = client.get_policy(policyEngineId=args.engine_id, policyId=policy_id)
+        status = policy["status"]
+        if status == "ACTIVE":
+            print(f"ACTIVE: '{api_name}' passed validation")
+            return 0
+        if status.endswith("_FAILED"):
+            for reason in policy.get("statusReasons", []):
+                print(f"  {reason}")
+            print(f"{status}: '{api_name}' failed validation")
+            return 1
+        time.sleep(5)
+    print(f"Timed out waiting for '{api_name}' (last status {status})")
+    return 1
 
 
 if __name__ == "__main__":

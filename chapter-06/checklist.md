@@ -7,17 +7,23 @@ This checklist accompanies Chapter 6 of *AgentCore in Production: The Operator's
 ## Before deployment
 
 ### Preview status
-- [ ] The team has acknowledged that Session Storage is in **public preview** (since March 25, 2026). Pricing, limits, and behaviors may change before GA.
+- [ ] The team has acknowledged that Session Storage is in **public preview** (since March 25, 2026; still preview as of October 2026, and not charged during preview). Pricing, limits, and behaviors may change before GA.
 - [ ] Business-critical decisions do not assume Session Storage will remain exactly as it is today. The architecture has a documented fallback if the service becomes unsuitable for the workload.
 
 ### Regional fit
-- [ ] The deployment region is one of the 14 supported preview regions (US East N. Virginia, US East Ohio, US West Oregon, Canada Central, Asia Pacific Mumbai, Seoul, Singapore, Sydney, Tokyo, Europe Frankfurt, Ireland, London, Paris, Stockholm).
+- [ ] The deployment region supports Session Storage. It launched in 14 Regions (US East N. Virginia, US East Ohio, US West Oregon, Canada Central, Asia Pacific Mumbai, Seoul, Singapore, Sydney, Tokyo, Europe Frankfurt, Ireland, London, Paris, Stockholm); AgentCore now runs in 22 Regions, so check the current AgentCore Regions table rather than this list.
 - [ ] If the workload requires a region not on the list, the team has a documented plan for when that region gains support.
 
 ### Limits and capacity
-- [ ] No session is expected to exceed **1 GB of state** (preview limit).
+- [ ] No session is expected to exceed **1 GB of state** or roughly **100,000 files** (~50 MB metadata limit), 200 directory levels, or 255-byte filenames.
 - [ ] If the workload could grow beyond 1 GB, the team has a plan for splitting state across sessions, archiving to S3, or moving the workload off Session Storage.
 - [ ] The team understands the 14-day idle reset and has decided whether sessions in the workload routinely exceed that threshold.
+
+### Compute choice
+- [ ] The workload fits a microVM session: at most 8 hours (`maxLifetime` <= 28,800 s), 15-minute default idle timeout, 15-minute synchronous request limit. Longer work is split into invocations against the same session ID, or runs as an async job (8-hour cap).
+- [ ] If the workload needs sessions longer than 8 hours or GPUs, the team has evaluated Runtime Instances, and knows Session Storage is not supported there (capacity provider EBS volumes replace it).
+- [ ] If sessions or agents must share files, the team uses a bring-your-own S3 Files or EFS mount (VPC required) rather than Session Storage.
+- [ ] If the runtime uses platform version V2, per-request values (session IDs, tokens, timestamps) are computed in the request handler, not at startup, because startup state is frozen into the snapshot.
 
 ---
 
@@ -25,7 +31,7 @@ This checklist accompanies Chapter 6 of *AgentCore in Production: The Operator's
 
 ### Generation
 - [ ] Session IDs are generated programmatically, not hardcoded.
-- [ ] Every session ID is at least **33 characters** (validated client-side by AgentCore).
+- [ ] Every session ID is **33 to 256 characters** (validated client-side by AgentCore).
 - [ ] Session IDs encode a stable user/tenant identifier so the same user resuming the same workspace gets the same filesystem.
 - [ ] Session IDs are not predictable across users (otherwise a multi-tenant collision risk exists).
 - [ ] The `generate_session_id()` helper from `utils/session_lifecycle.py` (or an equivalent) is used.
@@ -108,9 +114,13 @@ This checklist accompanies Chapter 6 of *AgentCore in Production: The Operator's
 - [ ] The role does NOT have `bedrock-agentcore-control:*` permissions (it should not be able to stop other sessions, modify the runtime, or list other tenants' resources).
 - [ ] If shell commands are enabled, the role has the absolute minimum filesystem and network permissions required.
 
-### Cedar policies
-- [ ] AgentCore Policy rules (Chapter 3) gate which tool calls the agent can make.
-- [ ] If `InvokeAgentRuntimeCommand` is exposed, a Cedar policy restricts which commands can be executed.
+### Command execution
+- [ ] AgentCore Policy rules (Chapter 3) gate which tool calls the agent can make through the Gateway.
+- [ ] The team understands that Cedar does **not** see `InvokeAgentRuntimeCommand` or `InvokeAgentRuntimeCommandShell`: they are Runtime APIs that never pass through the Gateway.
+- [ ] IAM grants `bedrock-agentcore:InvokeAgentRuntimeCommand` and `bedrock-agentcore:InvokeAgentRuntimeCommandShell` only to the principals that need them, separately from `InvokeAgentRuntime`.
+- [ ] Commands the agent itself must trigger are exposed as narrow Gateway tools (fixed command templates behind a Lambda target), so Cedar evaluates the tool call.
+- [ ] Command timeouts are set explicitly (1-3,600 s; default 300 s).
+- [ ] Drivers that open many new sessions at once stay under the 25 TPS per-account session-creation quota; all Runtime data-plane calls share 1,000 TPS per account.
 
 ### Observability
 - [ ] Every session invocation generates a CloudWatch Transaction Search trace.

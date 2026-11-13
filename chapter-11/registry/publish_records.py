@@ -1,40 +1,41 @@
 """
-publish_records.py — Registry lifecycle: create, publish, submit, adjudicate.
+publish_records.py — Registry lifecycle on the GA `agent-registry` namespace.
 
-Accompanies Chapter 11 of "AgentCore in Production: The Operator's Playbook".
+Accompanies Chapter 11 of "AgentCore in Production: The Operator's Playbook",
+2nd edition (October 2026).
 
-This script walks the full lifecycle of an AWS Agent Registry record:
-
-    create registry            (Administrator)
-    create record  -> DRAFT    (Publisher)
+    create registry            (Administrator)   agent-registry-control
+    create record  -> DRAFT    (Publisher)       agent-registry-control
     submit         -> PENDING  (Publisher)  -> EventBridge -> Curator notified
     approve/reject -> APPROVED (Curator)    -> discoverable
                    -> REJECTED              -> kept as history, not searchable
+    search                     (Consumer)        agent-registry (data plane)
 
-The persona boundaries are real IAM boundaries, not conventions. Running the
-submit step with Publisher credentials works; running the approve step with
-the same credentials returns AccessDeniedException. The `--prove-boundary`
-flag demonstrates this deliberately, because a governance control nobody has
-tested is a governance control nobody should trust.
+What changed from the first edition (preview, `bedrock-agentcore` namespace,
+shut down October 30, 2026):
+    * clients are `agent-registry-control` and `agent-registry`
+    * auto-approval is `approvalConfiguration={"autoApprovalRules": [...]}`
+      (empty list = manual approval), not `{"autoApproval": False}`
+    * search is `SearchDiscoverableRegistryRecords`; it takes exactly one
+      registry id and returns at most 20 results
+    * creating a registry or a record is asynchronous (CREATING first)
+    * ListRegistryRecords filters are a structured `filters` list
 
-Requirements:
-    boto3 >= 1.42.87        (earlier SDKs lack the registry methods entirely)
-    AWS CLI v2 >= 2.34.28   (only if you want to use the CLI; boto3 is ahead)
+The persona boundaries are IAM boundaries. Running `approve` with Publisher
+credentials should return AccessDeniedException; `prove-boundary` checks it.
+
+Run against the GA namespace on 2026-11-10: create-registry, publish, submit, approve,
+reject, and search. `prove-boundary` and personas.tf were not run. Parameters are also
+validated offline against the botocore service model (repo/_verify).
 
 Usage:
-    # As Administrator
     python publish_records.py create-registry --name acme-agent-catalog
-
-    # As Publisher
     python publish_records.py publish --registry-id <id>
-    python publish_records.py submit --registry-id <id> --all
-
-    # As Curator
+    python publish_records.py submit  --registry-id <id> --all
     python publish_records.py approve --registry-id <id> --record-id <rid> \
         --reason "Meets naming and security standards; owner and contact documented."
-
-    # As Consumer
-    python publish_records.py search --registry-id <id> --query "explain an invoice"
+    python publish_records.py search  --registry-id <id> --query "explain an invoice"
+    python publish_records.py prove-boundary --registry-id <id> --record-id <rid>
 """
 
 import argparse
@@ -42,7 +43,6 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -54,83 +54,70 @@ logger = logging.getLogger("registry")
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
-# Preview Regions as of April 2026. Check before assuming.
-PREVIEW_REGIONS = {
-    "us-east-1", "us-west-2", "ap-southeast-2", "ap-northeast-1", "eu-west-1"
+# Regions where AWS Agent Registry is available, as of October 2026 (GA did
+# not add any). Check the AgentCore regions table before assuming.
+REGISTRY_REGIONS = {
+    "us-east-1", "us-west-2", "eu-west-1", "ap-southeast-2", "ap-northeast-1"
 }
+
+MIN_REASON_LENGTH = 20
 
 
 def _control(region: str = AWS_REGION):
-    if region not in PREVIEW_REGIONS:
-        logger.warning(
-            "%s was not a Registry preview Region as of April 2026; "
-            "expect endpoint errors if coverage has not expanded", region
-        )
-    return boto3.client("bedrock-agentcore-control", region_name=region)
+    if region not in REGISTRY_REGIONS:
+        logger.warning("%s was not an Agent Registry Region as of October 2026", region)
+    return boto3.client("agent-registry-control", region_name=region)
 
 
 def _data(region: str = AWS_REGION):
-    return boto3.client("bedrock-agentcore", region_name=region)
+    return boto3.client("agent-registry", region_name=region)
+
+
+def _id_from_arn(arn: str) -> str | None:
+    return arn.rsplit("/", 1)[-1] if arn else None
 
 
 # =========================================================================
-# Administrator: create the registry
+# Administrator
 # =========================================================================
 
 def create_registry(name: str, description: str, region: str) -> dict:
-    """Create a registry. Administrator persona.
+    """Create a registry with manual approval. Administrator persona.
 
-    Auto-approval is available and should stay off in production: it turns
-    the approval workflow into a formality, which is the same as not having
-    one. The point of the Curator is that a second person looked.
+    `autoApprovalRules: []` means every submission waits for a Curator.
+    ["APPROVE_ALL"] is the GA equivalent of the preview's autoApproval=True;
+    keep it for sandbox registries only.
 
-    Two API details worth knowing:
-
-      1. Auto-approval is a NESTED parameter, `approvalConfiguration=
-         {"autoApproval": False}` — not the top-level `autoApprovalEnabled`
-         it is easy to guess. botocore rejects the flat form with
-         ParamValidationError before any network call.
-      2. CreateRegistry's response has exactly one useful field:
-         `registryArn`. There is no `registryId` in the output — the
-         `registryId` used everywhere else in this file (and in the
-         --registry-id CLI flag) is the trailing ARN segment, derived here.
+    The response carries only `registryArn`. The registry id used by every
+    other call is its trailing segment (12-16 alphanumerics); both the ARN
+    and the id are accepted wherever `registryId` is expected.
     """
     client = _control(region)
     response = client.create_registry(
         name=name,
         description=description,
-        # Explicitly disabled. See Chapter 11 Section 11.5.
-        approvalConfiguration={"autoApproval": False},
+        approvalConfiguration={"autoApprovalRules": []},
     )
     registry_arn = response.get("registryArn", "")
-    registry_id = registry_arn.rsplit("/", 1)[-1] if registry_arn else None
     print(json.dumps({
         "registryArn": registry_arn,
-        "registryId": registry_id,  # derived from the ARN; not an API field
-        "autoApproval": False,
+        "registryId": _id_from_arn(registry_arn),
+        "autoApprovalRules": [],
+        "note": "creation is asynchronous; wait for status READY (get_registry)",
     }, indent=2))
     return response
 
 
 # =========================================================================
-# Publisher: create records and submit them
+# Publisher
 # =========================================================================
 
 def publish_catalog(registry_id: str, region: str) -> list[dict]:
-    """Create every record in the example catalog as DRAFT. Publisher persona.
+    """Create every record in the example catalog. Publisher persona.
 
-    CreateRegistryRecord's response, like CreateRegistry's, only carries an
-    ARN (`recordArn` plus `status`) — no `recordId` field. Every downstream
-    call in this file (submit, approve/reject) takes `recordId`, so we parse
-    it from the trailing ARN segment
-    (`.../registry/<registryId>/record/<recordId>`) once here rather than
-    letting every caller silently receive `None`.
-
-    The parsing is a convenience, not a necessity: `registryId` and
-    `recordId` both accept an ARN as well as a bare ID, so passing
-    `recordArn` straight through works too. Deriving the short id keeps the
-    console, the CLI examples and the `--record-id` flag consistent with
-    each other.
+    Records start in CREATING (asynchronous) and settle in DRAFT. The
+    response carries `recordArn` and `status`; the record id is the
+    trailing ARN segment (12 alphanumerics).
     """
     client = _control(region)
     created = []
@@ -139,24 +126,24 @@ def publish_catalog(registry_id: str, region: str) -> list[dict]:
         try:
             response = client.create_registry_record(**request)
             record_arn = response.get("recordArn", "")
-            record_id = record_arn.rsplit("/", 1)[-1] if record_arn else None
             created.append({
                 "name": record.name,
                 "recordArn": record_arn,
-                "recordId": record_id,  # derived from the ARN; not an API field
-                "status": response.get("status", "DRAFT"),
+                "recordId": _id_from_arn(record_arn),
+                "status": response.get("status", "CREATING"),
             })
-            print(f"  created  {record.name:<28} {record_id}")
+            print(f"  created  {record.name:<28} {_id_from_arn(record_arn)}")
         except ClientError as exc:
             print(f"  FAILED   {record.name:<28} {exc}")
     return created
 
 
 def submit_record(registry_id: str, record_id: str, region: str) -> dict:
-    """Move a record from DRAFT to PENDING_APPROVAL. Publisher persona.
+    """DRAFT -> PENDING_APPROVAL. Publisher persona.
 
-    This is the call EventBridge listens for; the rule in personas.tf turns
-    it into an SNS notification to the Curator.
+    The service emits the EventBridge event `Registry Record State changed to
+    Pending Approval` (source `aws.agent-registry`); personas.tf routes it to
+    the Curator.
     """
     client = _control(region)
     response = client.submit_registry_record_for_approval(
@@ -166,37 +153,40 @@ def submit_record(registry_id: str, record_id: str, region: str) -> dict:
     return response
 
 
+def list_drafts(registry_id: str, region: str) -> list[dict]:
+    client = _control(region)
+    drafts = []
+    paginator = client.get_paginator("list_registry_records")
+    for page in paginator.paginate(
+        registryId=registry_id,
+        filters=[{"name": "status", "values": ["DRAFT"]}],
+    ):
+        drafts.extend(page.get("registryRecords", []))
+    return drafts
+
+
 # =========================================================================
-# Curator: approve or reject
+# Curator
 # =========================================================================
 
-def set_status(
-    registry_id: str,
-    record_id: str,
-    status: str,
-    reason: str,
-    region: str,
-) -> dict:
+def set_status(registry_id: str, record_id: str, status: str, reason: str,
+               region: str) -> dict:
     """Transition a record's status. Curator persona.
 
-    API details worth knowing:
-
-      1. The parameter is `status`, not `newStatus`.
-      2. `registryId` and `recordId` each accept EITHER the ARN or the bare
-         ID, so the ARN returned by CreateRegistry/CreateRegistryRecord can
-         be passed straight through without parsing an ID out of it.
-      3. `statusReason` is NOT marked required by the service model or the
-         SDK reference — only `registryId`, `recordId` and `status` are. This
-         function requires it anyway, as a local policy rather than an API
-         constraint: every state change should leave a structured,
-         attributable reason behind it. In six months someone will ask why
-         this record was approved. Resist the urge to type "ok".
+    The service model marks both `status` (not `newStatus`) and
+    `statusReason` as required, so botocore rejects a call without them
+    before it leaves the machine (ParamValidationError). The model also
+    allows an empty reason (min length 0, max 255): "required" guarantees
+    the field exists, not that anyone wrote in it. This helper enforces a
+    floor, as a local policy, because "ok" is not an audit trail.
     """
-    if not reason or len(reason.strip()) < 20:
+    if not reason or len(reason.strip()) < MIN_REASON_LENGTH:
         raise ValueError(
             "statusReason must be substantive. In six months someone will ask "
             "why this record was approved; 'ok' is not an answer."
         )
+    if len(reason) > 255:
+        raise ValueError("statusReason is limited to 255 characters by the service")
     client = _control(region)
     response = client.update_registry_record_status(
         registryId=registry_id,
@@ -209,36 +199,31 @@ def set_status(
 
 
 # =========================================================================
-# Consumer: search
+# Consumer
 # =========================================================================
 
-def search(registry_id: str, query: str, region: str, max_results: int = 10) -> list[dict]:
-    """Search approved records. Consumer persona (data plane).
+def search(registry_id: str, query: str, region: str, max_results: int = 10,
+           record_type: str | None = None) -> list[dict]:
+    """Search approved records. Consumer persona, data plane.
 
-    Only APPROVED records are returned. REJECTED and DEPRECATED records
-    remain as history and are invisible here, which is the correct behavior
-    and also means "I cannot find it" and "it was rejected" look identical
-    to a consumer. Tell your Publishers that.
+    Exactly one registry id per call; maxResults 1-20. Only APPROVED records
+    are discoverable, so "rejected" and "does not exist" look identical here.
     """
     client = _data(region)
-    response = client.search_registry_records(
-        # `registryIds` is a list — SearchRegistryRecords can search across
-        # more than one registry in a single call. Passing the singular
-        # `registryId` string raises ParamValidationError (unknown parameter).
-        registryIds=[registry_id],
-        searchQuery=query,
-        maxResults=max_results,
-    )
-    # The output key is `registryRecords` for both SearchRegistryRecords and
-    # ListRegistryRecords — not `records`. `response.get("records", [])`
-    # silently returns an empty list forever, since "records" is never a key
-    # in the real response.
+    params: dict = {
+        "registryIds": [registry_id],
+        "searchQuery": query,
+        "maxResults": max(1, min(max_results, 20)),
+    }
+    if record_type:
+        params["filters"] = {"recordType": {"$eq": record_type}}
+    response = client.search_discoverable_registry_records(**params)
     results = response.get("registryRecords", [])
     if not results:
         print(f"  no matches for '{query}'")
-        print("  (short queries behave like keyword search — see Section 11.6)")
+        print("  (short queries behaved like keyword search in the 2026 lab — Section 11.6)")
     for r in results:
-        print(f"  {r.get('name', '?'):<30} {r.get('descriptorType', '?'):<14} {r.get('recordId', '')}")
+        print(f"  {r.get('name', '?'):<30} {r.get('recordType', '?'):<8} {r.get('recordId', '')}")
     return results
 
 
@@ -249,16 +234,12 @@ def search(registry_id: str, query: str, region: str, max_results: int = 10) -> 
 def prove_boundary(registry_id: str, record_id: str, region: str) -> bool:
     """Attempt an approval with the current credentials and report the result.
 
-    Run this with Publisher credentials. The expected outcome is
-    AccessDeniedException, and a governance control that has never been
-    tested is a governance control nobody should trust.
+    Run it as a Publisher. The expected outcome is AccessDeniedException.
     """
     try:
-        set_status(
-            registry_id, record_id, "APPROVED",
-            "Boundary test — this call is expected to be denied for Publishers.",
-            region,
-        )
+        set_status(registry_id, record_id, "APPROVED",
+                   "Boundary test — this call is expected to be denied for Publishers.",
+                   region)
         print("  UNEXPECTED: the approval succeeded. Check the persona policies.")
         return False
     except ClientError as exc:
@@ -275,9 +256,9 @@ def prove_boundary(registry_id: str, record_id: str, region: str) -> bool:
 # =========================================================================
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="AWS Agent Registry lifecycle.")
+    parser = argparse.ArgumentParser(description="AWS Agent Registry lifecycle (GA).")
     parser.add_argument("command", choices=[
-        "create-registry", "publish", "submit", "approve", "reject",
+        "create-registry", "publish", "submit", "approve", "reject", "deprecate",
         "search", "prove-boundary",
     ])
     parser.add_argument("--registry-id")
@@ -287,7 +268,8 @@ def main() -> int:
                         default="Acme SaaS private catalog of agents, tools, and skills.")
     parser.add_argument("--reason", default="")
     parser.add_argument("--query", default="")
-    parser.add_argument("--all", action="store_true", help="Apply to every record.")
+    parser.add_argument("--record-type", choices=["AGENT", "MCP", "SKILL", "CUSTOM", "GATEWAY"])
+    parser.add_argument("--all", action="store_true", help="Apply to every DRAFT record.")
     parser.add_argument("--region", default=AWS_REGION)
     args = parser.parse_args()
 
@@ -304,31 +286,26 @@ def main() -> int:
         publish_catalog(args.registry_id, args.region)
     elif args.command == "submit":
         if args.all:
-            client = _control(args.region)
-            listed = client.list_registry_records(registryId=args.registry_id)
-            # ListRegistryRecords' output key is `registryRecords`, same as
-            # SearchRegistryRecords — not `records`.
-            for rec in listed.get("registryRecords", []):
-                if rec.get("status") == "DRAFT":
-                    submit_record(args.registry_id, rec["recordId"], args.region)
+            for rec in list_drafts(args.registry_id, args.region):
+                submit_record(args.registry_id, rec["recordId"], args.region)
         else:
             if not args.record_id:
                 parser.error("--record-id or --all is required")
             submit_record(args.registry_id, args.record_id, args.region)
-    elif args.command in ("approve", "reject"):
+    elif args.command in ("approve", "reject", "deprecate"):
         if not args.record_id:
             parser.error("--record-id is required")
-        status = "APPROVED" if args.command == "approve" else "REJECTED"
+        status = {"approve": "APPROVED", "reject": "REJECTED",
+                  "deprecate": "DEPRECATED"}[args.command]
         set_status(args.registry_id, args.record_id, status, args.reason, args.region)
     elif args.command == "search":
         if not args.query:
             parser.error("--query is required")
-        search(args.registry_id, args.query, args.region)
+        search(args.registry_id, args.query, args.region, record_type=args.record_type)
     elif args.command == "prove-boundary":
         if not args.record_id:
             parser.error("--record-id is required")
         prove_boundary(args.registry_id, args.record_id, args.region)
-
     return 0
 
 

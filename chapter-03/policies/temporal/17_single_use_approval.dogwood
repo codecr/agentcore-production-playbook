@@ -1,0 +1,37 @@
+// Policy: 17_single_use_approval   (Dogwood temporal policy)
+// Category: Stateful control; alternative to policy 02
+// Intent: Allow one termination per human approval. The approval is the
+//         OUTPUT of approvals___check_approval, a Lambda target that asks
+//         the approval service and returns approved=true only if a human
+//         granted it for this instance. The model can call check_approval as
+//         often as it likes; it cannot make it return true.
+//         The since clause consumes the approval: after one terminate, a
+//         second needs a fresh approval.
+// Adapted from the single-use approval pattern in AWS's temporal policy
+// examples. Pair with a plain permit for approvals___check_approval.
+// Validation needs the Target's tool schema to declare what the policy reads
+// (live-tested 2026-11-10): check_approval must declare `instance_id` in its
+// input schema and an output schema with a boolean `approved`; otherwise
+// CreatePolicy fails with "mentions field `output.approved`, which is not
+// declared on that event".
+
+permit (
+  principal,
+  action == AgentCore::Action::"devops-prod___terminate_instance",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID"
+)
+when temporal {
+  !(
+    AgentCore::Action::"devops-prod___terminate_instance"::response{
+      eventResource: resource,
+      input.instance_id: context.input.instance_id
+    }
+  )
+  since within 1h (
+    AgentCore::Action::"approvals___check_approval"::response{
+      eventResource: resource,
+      input.instance_id: context.input.instance_id,
+      output.approved: true
+    }
+  )
+};

@@ -1,67 +1,89 @@
 """
-record_shapes.py — Normalize the four AWS Agent Registry descriptor shapes.
+record_shapes.py — Build AWS Agent Registry records in the GA (`agent-registry`) shape.
 
-Accompanies Chapter 11 of "AgentCore in Production: The Operator's Playbook".
+Accompanies Chapter 11 of "AgentCore in Production: The Operator's Playbook",
+2nd edition (October 2026).
 
 Why this file exists:
-    AWS Agent Registry supports four record types — MCP, A2A, AGENT_SKILLS,
-    and CUSTOM — and each one wants its descriptor in a different shape.
-    Three distinct patterns across four types. Publishing a handful of
-    records by hand means discovering each shape through a sequence of
-    ParamValidationError messages; publishing a catalog means writing this
-    layer once and never thinking about it again.
+    The first edition targeted the April 2026 preview, where the Registry lived
+    in the `bedrock-agentcore` namespace and each of four `descriptorType`
+    values (MCP, A2A, AGENT_SKILLS, CUSTOM) wanted a differently nested
+    descriptor. That namespace shut down on October 30, 2026. At GA (August 31,
+    2026) the Registry lives in its own namespace, `agent-registry`, and the
+    record model was restructured (see the AWS migration guide, "Change 2" and
+    "Change 3"):
 
-    The shapes, as of the April 2026 preview (confirmed against the
-    `bedrock-agentcore-control` service model, not guessed from analogy):
+      * `name` is now a deduplication key, unique within the registry.
+        The human-readable label moved to `displayName`.
+      * `recordType` (required) replaces `descriptorType`:
+        AGENT | MCP | SKILL | CUSTOM  (GATEWAY is assigned by auto-detection).
+      * `descriptors` is a flat map with exactly ONE primary key per record:
 
-        MCP           {"mcp": {"server": {"inlineContent": "..."},
-                                "tools":  {"inlineContent": "..."}}}
-                      `server` describes the MCP server itself (name,
-                      description, version); `tools` is the tool list,
-                      wrapped one level deeper as {"tools": [...]}. Both
-                      sub-keys carry `inlineContent`, never `schema`.
-        A2A           {"a2a": {"agentCard": {"inlineContent": "..."}}}
-                      ...and the AgentCard requires `protocolVersion`, which
-                      fails with a cryptic error when omitted. The sub-key is
-                      `agentCard`, never `schema`.
-        AGENT_SKILLS  {"agentSkills": {"skillDefinition": {"inlineContent": "..."},
-                                       "skillMd":         {"inlineContent": "..."}}}
-                      Plural key (`agentSkills`), two sub-keys — structured
-                      metadata in `skillDefinition`, markdown documentation in
-                      `skillMd` (which must start with YAML frontmatter
-                      delimited by `---`). The descriptorType enum value is
-                      `AGENT_SKILLS` (plural, uppercase-with-underscore), not
-                      `SKILL` or `AgentSkills`.
-        CUSTOM        {"custom":       {"inlineContent": "..."}}  <- flat, no
-                      intermediate sub-key. Breaks the pattern of the others.
+            recordType  valid primary descriptor
+            ----------  ------------------------------------------
+            AGENT       a2aAgentCard | mcpServer | custom
+            MCP         mcpServer | custom
+            SKILL       agentSkillsDefinition | custom
+            CUSTOM      custom
 
-    This module hides all of that behind one function per type plus a
-    validation pass that catches the common omissions locally, before the
-    API does.
+      * `inlineContent` became `data`; `schemaVersion` / `protocolVersion`
+        became `dataSchemaVersion`.
+      * Supplementary content nests under the primary descriptor's
+        `additionalData`: the MCP tool list (`tools`) and the skill's
+        Markdown (`skillMd`).
 
-PREVIEW NOTE: The Registry is in preview and the descriptor shapes are the
-part of the API most likely to change before GA. If AWS homogenizes them,
-delete this module and celebrate. Until then, centralize the weirdness.
+    The shapes are simpler than in preview, so this module is thinner than it
+    was. It keeps two jobs: building the right descriptor for each record type,
+    and refusing records that a catalog should never contain (no owner, no
+    contact, a description nobody could find with a search).
+
+VERIFICATION STATUS: shapes and parameter names validated offline against the
+botocore 1.43 `agent-registry-control` service model (see repo/_verify), and
+exercised against the live service in us-east-1 on 2026-11-10. The live service validates `data` against the schema named by
+`dataSchemaVersion`, and the first draft of this module failed that check for
+three of the four record types:
+
+  * A2A `0.3` requires the full Agent Card: protocolVersion, name,
+    description, url, version, capabilities, defaultInputModes,
+    defaultOutputModes, and skills, where every skill needs id, name,
+    description, and tags. Dropping any one of them is rejected.
+  * An MCP tool list is validated as MCP tools (`2025-06-18`): every tool
+    needs an `inputSchema`.
+  * `skillMd` frontmatter must contain a `description` field.
 
 Requires:
-    boto3 >= 1.42.87   (earlier SDKs do not have the registry methods at all)
+    boto3 recent enough to include the `agent-registry-control` client
+    (any 2026-08 or later release).
 """
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
-
+from typing import Any
 
 # =========================================================================
-# Record type constants
+# Record types (GA)
 # =========================================================================
 
+TYPE_AGENT = "AGENT"
 TYPE_MCP = "MCP"
-TYPE_A2A = "A2A"
-TYPE_AGENT_SKILLS = "AGENT_SKILLS"
+TYPE_SKILL = "SKILL"
 TYPE_CUSTOM = "CUSTOM"
 
-ALL_TYPES = (TYPE_MCP, TYPE_A2A, TYPE_AGENT_SKILLS, TYPE_CUSTOM)
+AUTHORABLE_TYPES = (TYPE_AGENT, TYPE_MCP, TYPE_SKILL, TYPE_CUSTOM)
+# GATEWAY exists too, but only auto-detection creates it.
+
+# Versions from AWS's GA sample. Not author-verified against the live service.
+MCP_SERVER_SCHEMA_VERSION = "2025-12-11"
+MCP_TOOLS_SCHEMA_VERSION = "2025-06-18"
+A2A_CARD_SCHEMA_VERSION = "0.3"
+
+# Fields the Registry enforces on an A2A 0.3 Agent Card (live-tested 2026-11-10).
+A2A_REQUIRED_CARD_FIELDS = (
+    "protocolVersion", "name", "description", "url", "version",
+    "capabilities", "defaultInputModes", "defaultOutputModes", "skills",
+)
+
+GENERIC_WORDS = {"tool", "agent", "service", "api", "helper", "util"}
 
 
 # =========================================================================
@@ -72,23 +94,27 @@ ALL_TYPES = (TYPE_MCP, TYPE_A2A, TYPE_AGENT_SKILLS, TYPE_CUSTOM)
 class RegistryRecord:
     """A record in the shape this repository uses internally.
 
-    `owner` and `contact` are not Registry fields — they live inside the
-    description and the custom payload. They are required here because a
-    catalog entry whose owner is unknown is the exact problem the Registry
-    exists to solve, and the audit script in observability/ reports on them.
+    `owner` and `contact` are not Registry fields. They are folded into the
+    description (which search indexes) because a catalog entry whose owner is
+    unknown is the problem the Registry exists to solve.
     """
-    name: str
-    record_type: str
+    name: str                        # dedup key: [a-zA-Z0-9][a-zA-Z0-9_\-./]*
+    display_name: str
+    record_type: str                 # AGENT | MCP | SKILL | CUSTOM
     description: str
-    owner: str                       # squad or team name
-    contact: str                     # email, Slack channel, or rota
-    payload: dict[str, Any]          # type-specific content
+    owner: str
+    contact: str
+    payload: dict[str, Any]          # type-specific content, see builders
+    record_version: str = "1.0.0"
     tags: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         problems: list[str] = []
-        if self.record_type not in ALL_TYPES:
-            problems.append(f"unknown record type '{self.record_type}'")
+        if self.record_type not in AUTHORABLE_TYPES:
+            problems.append(
+                f"record type '{self.record_type}' is not authorable "
+                f"(use one of {AUTHORABLE_TYPES}; GATEWAY comes from auto-detection)"
+            )
         if not self.owner:
             problems.append("owner is required — an unowned record is a future orphan")
         if not self.contact:
@@ -96,11 +122,10 @@ class RegistryRecord:
         if len(self.description) < 40:
             problems.append(
                 "description is too short. Registry search is only as good as the "
-                "worst descriptor indexed; write what a consumer would type as a query"
+                "worst description indexed; write what a consumer would type as a query"
             )
-        generic = {"tool", "agent", "service", "api", "helper", "util"}
         words = {w.strip(".,").lower() for w in self.description.split()}
-        if words & generic and len(words) < 15:
+        if words & GENERIC_WORDS and len(words) < 15:
             problems.append(
                 "description leans on generic words without enough context "
                 "(tool/agent/service). Be specific about domain and capability"
@@ -109,98 +134,90 @@ class RegistryRecord:
         return problems
 
     def _validate_payload(self) -> list[str]:
-        """Catch the omissions that the API reports with unhelpful errors."""
         problems: list[str] = []
-        if self.record_type == TYPE_A2A:
-            if "protocolVersion" not in self.payload:
-                problems.append(
-                    "A2A AgentCard requires 'protocolVersion'; the API error for "
-                    "its absence does not name the field"
-                )
-            if "skills" not in self.payload:
-                problems.append("A2A AgentCard expects a 'skills' list")
+        p = self.payload
+        if self.record_type == TYPE_AGENT and "agentCard" in p:
+            card = p["agentCard"]
+            for key in A2A_REQUIRED_CARD_FIELDS:
+                if key not in card:
+                    problems.append(f"A2A Agent Card is missing '{key}'")
+            for skill in card.get("skills", []):
+                for key in ("id", "name", "description", "tags"):
+                    if key not in skill:
+                        problems.append(
+                            f"A2A skill '{skill.get('id', '?')}' is missing '{key}'"
+                        )
+        if self.record_type == TYPE_MCP and "server" not in p:
+            problems.append("MCP record requires a 'server' object (name, description, version)")
         if self.record_type == TYPE_MCP:
-            if "server" not in self.payload:
-                problems.append(
-                    "MCP descriptor requires a 'server' object (name, description, "
-                    "version) — 'server' is the required sub-key, 'tools' is optional"
-                )
-        if self.record_type == TYPE_AGENT_SKILLS:
-            if "skillDefinition" not in self.payload:
-                problems.append(
-                    "AGENT_SKILLS requires 'skillDefinition' (structured metadata: "
-                    "name, title, version, owner, package)"
-                )
-            if "skillMd" not in self.payload:
-                problems.append(
-                    "AGENT_SKILLS requires 'skillMd' (markdown documentation)"
-                )
-            elif not self.payload["skillMd"].lstrip().startswith("---"):
-                problems.append(
-                    "AGENT_SKILLS' skillMd must start with YAML frontmatter "
-                    "delimited by '---' — the API rejects plain markdown here"
-                )
+            for tool in p.get("tools") or []:
+                if "inputSchema" not in tool:
+                    problems.append(
+                        f"MCP tool '{tool.get('name', '?')}' is missing 'inputSchema'"
+                    )
+        if self.record_type == TYPE_SKILL:
+            if "skillDefinition" not in p:
+                problems.append("SKILL record requires 'skillDefinition' (structured metadata)")
+            md = p.get("skillMd")
+            if md is not None and not md.lstrip().startswith("---"):
+                problems.append("skillMd should start with YAML frontmatter delimited by '---'")
+            elif md is not None:
+                frontmatter = md.split("---")[1] if md.count("---") >= 2 else ""
+                if "description:" not in frontmatter:
+                    problems.append("skillMd frontmatter must contain a 'description' field")
         return problems
 
 
 # =========================================================================
-# Descriptor builders — one per type, hiding the shape differences
+# Descriptor builders — one primary key per record
 # =========================================================================
 
+def _agent_descriptor(payload: dict[str, Any]) -> dict[str, Any]:
+    # AGENT records backed by an A2A server carry the Agent Card. An agent
+    # exposed only as an HTTP endpoint can use `custom` instead.
+    if "agentCard" in payload:
+        return {"a2aAgentCard": {
+            "data": json.dumps(payload["agentCard"]),
+            "dataSchemaVersion": A2A_CARD_SCHEMA_VERSION,
+        }}
+    return {"custom": {"data": json.dumps(payload)}}
+
+
 def _mcp_descriptor(payload: dict[str, Any]) -> dict[str, Any]:
-    # `server` is required, `tools` is optional. Both sub-keys carry
-    # `inlineContent`; `tools` wraps its list one level deeper as
-    # {"tools": [...]} rather than being the list itself.
     descriptor: dict[str, Any] = {
-        "server": {"inlineContent": json.dumps(payload["server"])}
+        "data": json.dumps(payload["server"]),
+        "dataSchemaVersion": MCP_SERVER_SCHEMA_VERSION,
     }
-    tools = payload.get("tools")
-    if tools is not None:
-        descriptor["tools"] = {"inlineContent": json.dumps({"tools": tools})}
-    return {"mcp": descriptor}
+    if payload.get("tools") is not None:
+        # The tool list is supplementary content, wrapped as {"tools": [...]}.
+        descriptor["additionalData"] = {"tools": {
+            "data": json.dumps({"tools": payload["tools"]}),
+            "dataSchemaVersion": MCP_TOOLS_SCHEMA_VERSION,
+        }}
+    return {"mcpServer": descriptor}
 
 
-def _a2a_descriptor(payload: dict[str, Any]) -> dict[str, Any]:
-    # Sub-key is `agentCard`, not `schema`. `payload` IS the AgentCard.
-    return {"a2a": {"agentCard": {"inlineContent": json.dumps(payload)}}}
-
-
-def _agent_skills_descriptor(payload: dict[str, Any]) -> dict[str, Any]:
-    # Plural key (`agentSkills`, camelCase) with two distinct sub-keys, not
-    # `inlineContent` directly and not a single `skills` list:
-    #   skillDefinition — structured JSON metadata (inlineContent is JSON)
-    #   skillMd         — markdown documentation with YAML frontmatter
-    #                     (inlineContent is the raw markdown string, NOT
-    #                     json.dumps'd)
-    # Sending both is recommended: search indexes both sides.
-    descriptor: dict[str, Any] = {}
-    if "skillDefinition" in payload:
-        descriptor["skillDefinition"] = {
-            "inlineContent": json.dumps(payload["skillDefinition"])
-        }
+def _skill_descriptor(payload: dict[str, Any]) -> dict[str, Any]:
+    descriptor: dict[str, Any] = {"data": json.dumps(payload["skillDefinition"])}
     if "skillMd" in payload:
-        descriptor["skillMd"] = {"inlineContent": payload["skillMd"]}
-    return {"agentSkills": descriptor}
+        # Raw Markdown, not json.dumps'd.
+        descriptor["additionalData"] = {"skillMd": {"data": payload["skillMd"]}}
+    return {"agentSkillsDefinition": descriptor}
 
 
 def _custom_descriptor(payload: dict[str, Any]) -> dict[str, Any]:
-    # Flat. No intermediate sub-key. Inferring {"custom": {"schema": ...}}
-    # by analogy with MCP produces:
-    #   Unknown parameter in descriptors.custom: "schema",
-    #   must be one of: inlineContent
-    return {"custom": {"inlineContent": json.dumps(payload)}}
+    return {"custom": {"data": json.dumps(payload)}}
 
 
 _BUILDERS = {
+    TYPE_AGENT: _agent_descriptor,
     TYPE_MCP: _mcp_descriptor,
-    TYPE_A2A: _a2a_descriptor,
-    TYPE_AGENT_SKILLS: _agent_skills_descriptor,
+    TYPE_SKILL: _skill_descriptor,
     TYPE_CUSTOM: _custom_descriptor,
 }
 
 
 def build_descriptors(record: RegistryRecord) -> dict[str, Any]:
-    """Turn a normalized record into the descriptor shape its type requires."""
     problems = record.validate()
     if problems:
         raise ValueError(
@@ -210,39 +227,35 @@ def build_descriptors(record: RegistryRecord) -> dict[str, Any]:
 
 
 def to_create_request(record: RegistryRecord, registry_id: str) -> dict[str, Any]:
-    """Build the full CreateRegistryRecord request."""
-    return {
+    """Build the full CreateRegistryRecord request for `agent-registry-control`."""
+    request: dict[str, Any] = {
         "registryId": registry_id,
         "name": record.name,
-        # The parameter is `descriptorType`, not `type` — botocore raises
-        # ParamValidationError for "type" since it is not a recognized
-        # member of the CreateRegistryRecord input shape. record_type
-        # already holds the correct enum value for every TYPE_* constant
-        # (MCP, A2A, AGENT_SKILLS, CUSTOM) confirmed against the service
-        # model's descriptorType enum.
-        "descriptorType": record.record_type,
-        # Owner and contact are folded into the description on purpose: the
-        # description is indexed by search, so "owned by Squad Billing" is
-        # discoverable, and an orphan record is visibly an orphan.
+        "displayName": record.display_name,
+        "recordType": record.record_type,
+        "recordVersion": record.record_version,
+        # Owner and contact folded into the description on purpose: the
+        # description is indexed by search, so an orphan is visibly an orphan.
         "description": (
             f"{record.description} "
             f"[owner: {record.owner} | contact: {record.contact}]"
         ),
         "descriptors": build_descriptors(record),
     }
+    if record.tags:
+        request["tags"] = record.tags
+    return request
 
 
 # =========================================================================
 # Example catalog — the Acme SaaS agents from earlier chapters
 # =========================================================================
-# Every one of these is an agent or tool the book has already described.
-# Publishing them is the exercise of turning a book's worth of components
-# into a catalog somebody else can find.
 
 ACME_CATALOG: list[RegistryRecord] = [
     RegistryRecord(
         name="acme-support-agent",
-        record_type=TYPE_A2A,
+        display_name="Acme support agent",
+        record_type=TYPE_AGENT,
         description=(
             "Customer-facing support agent for Acme SaaS. Answers billing, "
             "configuration, and account questions for enterprise tenants, "
@@ -250,22 +263,30 @@ ACME_CATALOG: list[RegistryRecord] = [
         ),
         owner="Squad Support Platform",
         contact="#acme-support-platform",
-        payload={
+        payload={"agentCard": {
             "protocolVersion": "0.3.0",
             "name": "acme-support-agent",
             "description": "Enterprise customer support agent, multi-tenant.",
+            "url": "https://agents.acme.example/support",
+            "version": "2.4.0",
+            "capabilities": {},
+            "defaultInputModes": ["text/plain"],
+            "defaultOutputModes": ["text/plain"],
             "skills": [
                 {"id": "billing-explain", "name": "Explain billing",
-                 "description": "Explains invoices, proration, and plan changes."},
+                 "description": "Explains invoices, proration, and plan changes.",
+                 "tags": ["billing", "invoices"]},
                 {"id": "escalate", "name": "Escalate to human",
-                 "description": "Routes outages, refunds, and legal topics to a human."},
+                 "description": "Routes outages, refunds, and legal topics to a human.",
+                 "tags": ["escalation", "refunds"]},
             ],
-        },
+        }},
         tags={"environment": "production", "tier": "customer-facing"},
     ),
     RegistryRecord(
         name="acme-runbook-generator",
-        record_type=TYPE_A2A,
+        display_name="Acme runbook generator",
+        record_type=TYPE_AGENT,
         description=(
             "Long-running agent that analyzes 30 days of support tickets, "
             "identifies recurring operational patterns, and writes runbooks "
@@ -273,21 +294,29 @@ ACME_CATALOG: list[RegistryRecord] = [
         ),
         owner="Squad Platform",
         contact="carla@acme.example",
-        payload={
+        payload={"agentCard": {
             "protocolVersion": "0.3.0",
             "name": "acme-runbook-generator",
             "description": "Batch runbook generation from ticket history.",
+            "url": "https://agents.acme.example/runbooks",
+            "version": "1.3.0",
+            "capabilities": {},
+            "defaultInputModes": ["text/plain"],
+            "defaultOutputModes": ["text/plain"],
             "skills": [
                 {"id": "analyze-tickets", "name": "Analyze ticket corpus",
-                 "description": "Clusters tickets into recurring operational patterns."},
+                 "description": "Clusters tickets into recurring operational patterns.",
+                 "tags": ["tickets", "analysis"]},
                 {"id": "write-runbook", "name": "Write runbook",
-                 "description": "Produces a Markdown runbook and commits it to Git."},
+                 "description": "Produces a Markdown runbook and commits it to Git.",
+                 "tags": ["runbooks", "git"]},
             ],
-        },
+        }},
         tags={"environment": "production", "tier": "internal"},
     ),
     RegistryRecord(
         name="acme-billing-mcp",
+        display_name="Acme billing MCP server",
         record_type=TYPE_MCP,
         description=(
             "MCP server exposing read-only invoice, plan history, and "
@@ -304,18 +333,27 @@ ACME_CATALOG: list[RegistryRecord] = [
             },
             "tools": [
                 {"name": "get_invoice",
-                 "description": "Retrieve an invoice by ID for the calling tenant."},
+                 "description": "Retrieve an invoice by ID for the calling tenant.",
+                 "inputSchema": {"type": "object",
+                                 "properties": {"invoice_id": {"type": "string"}},
+                                 "required": ["invoice_id"]}},
                 {"name": "get_plan_history",
-                 "description": "Return the tenant's plan changes with effective dates."},
+                 "description": "Return the tenant's plan changes with effective dates.",
+                 "inputSchema": {"type": "object", "properties": {}}},
                 {"name": "calculate_proration",
-                 "description": "Compute prorated charges for a mid-cycle plan change."},
-            ]
+                 "description": "Compute prorated charges for a mid-cycle plan change.",
+                 "inputSchema": {"type": "object",
+                                 "properties": {"new_plan": {"type": "string"},
+                                                "change_date": {"type": "string"}},
+                                 "required": ["new_plan"]}},
+            ],
         },
         tags={"environment": "production", "data-classification": "confidential"},
     ),
     RegistryRecord(
         name="pii-redaction-skill",
-        record_type=TYPE_AGENT_SKILLS,
+        display_name="PII redaction skill",
+        record_type=TYPE_SKILL,
         description=(
             "Reusable skill that redacts personally identifiable information "
             "from text before it is written to logs, memory, or tickets. "
@@ -323,6 +361,7 @@ ACME_CATALOG: list[RegistryRecord] = [
         ),
         owner="Squad Compliance",
         contact="compliance@acme.example",
+        record_version="2.1.0",
         payload={
             "skillDefinition": {
                 "name": "pii-redaction",
@@ -330,27 +369,25 @@ ACME_CATALOG: list[RegistryRecord] = [
                 "version": "2.1.0",
                 "owner": "compliance@acme.example",
                 "tags": ["compliance", "privacy", "pii", "redaction"],
-                "package": {
-                    "type": "python",
-                    "name": "acme-pii-redaction",
-                    "version": "2.1.0",
-                },
+                "package": {"type": "python", "name": "acme-pii-redaction",
+                            "version": "2.1.0"},
             },
             "skillMd": (
                 "---\n"
                 "name: pii-redaction\n"
+                "description: Redacts PII from free text before it is logged or stored.\n"
                 "version: 2.1.0\n"
                 "---\n\n"
                 "# PII Redaction Skill\n\n"
                 "Redacts personally identifiable information from free text "
-                "before it is written to logs, memory, or tickets. Wraps the "
-                "Guardrails PII configuration used across Acme agents.\n"
+                "before it is written to logs, memory, or tickets.\n"
             ),
         },
         tags={"environment": "production", "reusable": "true"},
     ),
     RegistryRecord(
         name="acme-ticket-triage-tool",
+        display_name="Acme ticket triage classifier",
         record_type=TYPE_CUSTOM,
         description=(
             "Lambda-backed triage classifier that assigns severity, category, "
@@ -379,9 +416,10 @@ if __name__ == "__main__":
         for p in problems:
             print(f"         - {p}")
 
-    print("\nDescriptor shapes produced:\n")
+    print("\nDescriptor shapes produced (GA, agent-registry):\n")
     for rec in ACME_CATALOG:
         shape = build_descriptors(rec)
-        top_key = next(iter(shape))
-        inner = list(shape[top_key].keys())
-        print(f"  {rec.record_type:<14} -> {{'{top_key}': {inner}}}")
+        primary = next(iter(shape))
+        extra = list(shape[primary].get("additionalData", {}).keys())
+        print(f"  {rec.record_type:<7} -> {primary}"
+              + (f" + additionalData{extra}" if extra else ""))

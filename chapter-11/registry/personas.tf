@@ -19,22 +19,21 @@
 #                   role whose credentials sign requests from Claude Code or
 #                   any other MCP client.
 #
-# NOTE ON THE REGISTRY ITSELF (updated July 2026 — this moves fast, verify
-# before trusting it): hashicorp/aws shipped `aws_bedrockagentcore_registry`
-# in v6.52.0 (2026-06-24), so the registry itself CAN now be provisioned in
-# Terraform. Neither provider has shipped a `_record` resource, so
-# publish_records.py's boto3 path for records still has to stay regardless.
+# 2ND EDITION (October 2026): AWS Agent Registry went GA on August 31, 2026
+# under its own namespace, `agent-registry`. Every action below moved from the
+# `bedrock-agentcore:` prefix to `agent-registry:`, ARNs became
+# arn:aws:agent-registry:<region>:<account>:registry/<id>[/record/<rid>], and
+# the preview namespace shut down on October 30, 2026.
 #
-# BUT: as of v6.53.0 (2026-07-01) the resource is already marked deprecated
-# in the provider schema. AWS is moving Agent Registry from the
-# `bedrock-agentcore` namespace to a dedicated `agent-registry` namespace on
-# 2026-08-06, with the old namespace sunsetting 2026-09-17. A Terraform
-# resource wired to today's namespace would be dead within weeks of this
-# chapter shipping, so this file deliberately keeps the registry itself on
-# the boto3 path (create_registry() in publish_records.py) rather than
-# adding `aws_bedrockagentcore_registry` here. Once the provider ships the
-# `agent-registry`-namespaced resource, that is the one to adopt — check
-# the provider's CHANGELOG for `agent-registry` before wiring this up.
+# The registry itself can now be managed as code (CloudFormation
+# AWS::AgentRegistry::Registry / ::RegistryRecord, Terraform, CDK). This file
+# still provisions only the personas and the approval routing, so it works
+# whichever tool owns the registry. Do NOT attach the AWS managed policy
+# AgentRegistryFullAccess to Publishers: it grants UpdateRegistryRecordStatus,
+# which is exactly the self-approval this file exists to prevent.
+#
+# Not applied against AWS by the author for the GA namespace; action names are
+# taken from the Service Authorization Reference for agent-registry.
 # =============================================================================
 
 terraform {
@@ -42,7 +41,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 6.42"
+      version = ">= 6.42" # personas and eventing only; no registry resource used here
     }
   }
 }
@@ -79,13 +78,13 @@ locals {
   # `.name` is deprecated in the aws_region data source in favor of
   # `.region` (confirmed via `terraform providers schema -json` against
   # hashicorp/aws v6.57.1 — `name` carries "deprecated": true).
-  region     = data.aws_region.current.region
+  region = data.aws_region.current.region
 
   # Registry ARNs are region- and account-scoped:
-  #   arn:aws:bedrock-agentcore:<region>:<account>:registry/<id>
+  #   arn:aws:agent-registry:<region>:<account>:registry/<id>
   # Wildcarded here because the registry is created out-of-band by boto3.
   # Once the provider supports the resource, narrow this to the specific ARN.
-  registry_arn_pattern = "arn:aws:bedrock-agentcore:${local.region}:${local.account_id}:registry/*"
+  registry_arn_pattern = "arn:aws:agent-registry:${local.region}:${local.account_id}:registry/*"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -116,21 +115,31 @@ resource "aws_iam_role_policy" "administrator" {
         Sid    = "FullRegistryControl"
         Effect = "Allow"
         Action = [
-          "bedrock-agentcore:CreateRegistry",
-          "bedrock-agentcore:UpdateRegistry",
-          "bedrock-agentcore:DeleteRegistry",
-          "bedrock-agentcore:GetRegistry",
-          "bedrock-agentcore:ListRegistries",
-          "bedrock-agentcore:CreateRegistryRecord",
-          "bedrock-agentcore:UpdateRegistryRecord",
-          "bedrock-agentcore:DeleteRegistryRecord",
-          "bedrock-agentcore:GetRegistryRecord",
-          "bedrock-agentcore:ListRegistryRecords",
-          "bedrock-agentcore:SubmitRegistryRecordForApproval",
-          "bedrock-agentcore:UpdateRegistryRecordStatus",
-          "bedrock-agentcore:SearchRegistryRecords",
+          "agent-registry:CreateRegistry",
+          "agent-registry:UpdateRegistry",
+          "agent-registry:DeleteRegistry",
+          "agent-registry:GetRegistry",
+          "agent-registry:ListRegistries",
+          "agent-registry:CreateRegistryRecord",
+          "agent-registry:UpdateRegistryRecord",
+          "agent-registry:DeleteRegistryRecord",
+          "agent-registry:GetRegistryRecord",
+          "agent-registry:ListRegistryRecords",
+          "agent-registry:SubmitRegistryRecordForApproval",
+          "agent-registry:UpdateRegistryRecordStatus",
+          "agent-registry:SearchDiscoverableRegistryRecords",
+          "agent-registry:ListDiscoverableRegistryRecords",
+          "agent-registry:GetDiscoverableRegistryRecord",
+          "agent-registry:InvokeRegistryMcp",
         ]
         Resource = [local.registry_arn_pattern, "${local.registry_arn_pattern}/*"]
+      },
+      {
+        # CreateRegistry and ListRegistries take no resource ARN.
+        Sid      = "AccountLevelRegistryActions"
+        Effect   = "Allow"
+        Action   = ["agent-registry:CreateRegistry", "agent-registry:ListRegistries"]
+        Resource = "*"
       }
     ]
   })
@@ -158,24 +167,29 @@ resource "aws_iam_role_policy" "publisher" {
         Sid    = "AuthorRecords"
         Effect = "Allow"
         Action = [
-          "bedrock-agentcore:CreateRegistryRecord",
-          "bedrock-agentcore:UpdateRegistryRecord",
-          "bedrock-agentcore:GetRegistryRecord",
-          "bedrock-agentcore:ListRegistryRecords",
-          "bedrock-agentcore:SubmitRegistryRecordForApproval",
-          "bedrock-agentcore:SearchRegistryRecords",
-          "bedrock-agentcore:GetRegistry",
-          "bedrock-agentcore:ListRegistries",
+          "agent-registry:CreateRegistryRecord",
+          "agent-registry:UpdateRegistryRecord",
+          "agent-registry:GetRegistryRecord",
+          "agent-registry:ListRegistryRecords",
+          "agent-registry:SubmitRegistryRecordForApproval",
+          "agent-registry:SearchDiscoverableRegistryRecords",
+          "agent-registry:GetRegistry",
         ]
         Resource = [local.registry_arn_pattern, "${local.registry_arn_pattern}/*"]
+      },
+      {
+        Sid      = "ListRegistriesAccountLevel"
+        Effect   = "Allow"
+        Action   = ["agent-registry:ListRegistries"]
+        Resource = "*"
       },
       {
         Sid    = "CannotAdjudicateOwnWork"
         Effect = "Deny"
         Action = [
-          "bedrock-agentcore:UpdateRegistryRecordStatus",
-          "bedrock-agentcore:DeleteRegistry",
-          "bedrock-agentcore:DeleteRegistryRecord",
+          "agent-registry:UpdateRegistryRecordStatus",
+          "agent-registry:DeleteRegistry",
+          "agent-registry:DeleteRegistryRecord",
         ]
         Resource = "*"
       }
@@ -205,28 +219,33 @@ resource "aws_iam_role_policy" "curator" {
         Sid    = "AdjudicateRecords"
         Effect = "Allow"
         Action = [
-          "bedrock-agentcore:UpdateRegistryRecordStatus",
-          "bedrock-agentcore:GetRegistryRecord",
-          "bedrock-agentcore:ListRegistryRecords",
-          "bedrock-agentcore:SearchRegistryRecords",
-          "bedrock-agentcore:GetRegistry",
-          "bedrock-agentcore:ListRegistries",
+          "agent-registry:UpdateRegistryRecordStatus",
+          "agent-registry:GetRegistryRecord",
+          "agent-registry:ListRegistryRecords",
+          "agent-registry:SearchDiscoverableRegistryRecords",
+          "agent-registry:GetRegistry",
         ]
         Resource = [local.registry_arn_pattern, "${local.registry_arn_pattern}/*"]
+      },
+      {
+        Sid      = "ListRegistriesAccountLevel"
+        Effect   = "Allow"
+        Action   = ["agent-registry:ListRegistries"]
+        Resource = "*"
       },
       {
         Sid    = "CannotAuthor"
         Effect = "Deny"
         Action = [
-          "bedrock-agentcore:CreateRegistryRecord",
-          "bedrock-agentcore:UpdateRegistryRecord",
-          "bedrock-agentcore:CreateRegistry",
-          "bedrock-agentcore:DeleteRegistry",
+          "agent-registry:CreateRegistryRecord",
+          "agent-registry:UpdateRegistryRecord",
+          "agent-registry:CreateRegistry",
+          "agent-registry:DeleteRegistry",
           # Defense-in-depth, matching the Publisher's pattern: the Curator's
           # allow-list above never grants DeleteRegistryRecord, but an
           # explicit Deny survives a future broad managed-policy attachment
           # that the allow-list alone would not.
-          "bedrock-agentcore:DeleteRegistryRecord",
+          "agent-registry:DeleteRegistryRecord",
         ]
         Resource = "*"
       }
@@ -256,8 +275,12 @@ resource "aws_iam_role_policy" "consumer" {
         Sid    = "DiscoverOnly"
         Effect = "Allow"
         Action = [
-          "bedrock-agentcore:SearchRegistryRecords",
-          "bedrock-agentcore:GetRegistryRecord",
+          "agent-registry:SearchDiscoverableRegistryRecords",
+          "agent-registry:ListDiscoverableRegistryRecords",
+          # BatchGetDiscoverableRegistryRecord authorizes against this action.
+          "agent-registry:GetDiscoverableRegistryRecord",
+          # The registry's MCP endpoint (IDEs, client agents).
+          "agent-registry:InvokeRegistryMcp",
         ]
         Resource = [local.registry_arn_pattern, "${local.registry_arn_pattern}/*"]
       },
@@ -265,10 +288,10 @@ resource "aws_iam_role_policy" "consumer" {
         Sid    = "NoWrites"
         Effect = "Deny"
         Action = [
-          "bedrock-agentcore:CreateRegistryRecord",
-          "bedrock-agentcore:UpdateRegistryRecord",
-          "bedrock-agentcore:UpdateRegistryRecordStatus",
-          "bedrock-agentcore:DeleteRegistryRecord",
+          "agent-registry:CreateRegistryRecord",
+          "agent-registry:UpdateRegistryRecord",
+          "agent-registry:UpdateRegistryRecordStatus",
+          "agent-registry:DeleteRegistryRecord",
         ]
         Resource = "*"
       }
@@ -296,19 +319,12 @@ resource "aws_sns_topic_subscription" "curator_email" {
 resource "aws_cloudwatch_event_rule" "record_submitted" {
   name        = "${var.org_name}-registry-record-submitted"
   description = "Notify the Curator when a record is submitted for approval"
+  # GA: the Registry emits native events on the default bus. The preview's
+  # source (aws.bedrock-agentcore) and the CloudTrail-based pattern used in
+  # the first edition no longer match anything.
   event_pattern = jsonencode({
-    source        = ["aws.bedrock-agentcore"]
-    "detail-type" = ["AWS API Call via CloudTrail"]
-    detail = {
-      # Confirmed against AWS's own sample CloudTrail log for
-      # CreateRegistryRecord (devguide "AWS CloudTrail integration" page):
-      # eventSource is "bedrock-agentcore.amazonaws.com" for every Registry
-      # management event, not "bedrock-agentcore-control.amazonaws.com" —
-      # despite the control-plane SDK client being named
-      # bedrock-agentcore-control. Do not "fix" this without a source.
-      eventSource = ["bedrock-agentcore.amazonaws.com"]
-      eventName   = ["SubmitRegistryRecordForApproval"]
-    }
+    source        = ["aws.agent-registry"]
+    "detail-type" = ["Registry Record State changed to Pending Approval"]
   })
 }
 
@@ -319,10 +335,9 @@ resource "aws_cloudwatch_event_target" "notify_curator" {
 
   input_transformer {
     input_paths = {
-      account   = "$.detail.userIdentity.accountId"
-      principal = "$.detail.userIdentity.arn"
-      recordId  = "$.detail.requestParameters.recordId"
-      registry  = "$.detail.requestParameters.registryId"
+      recordArn = "$.resources[0]"
+      recordId  = "$.detail.registryRecordId"
+      registry  = "$.detail.registryId"
       time      = "$.time"
     }
     input_template = <<-EOT
@@ -330,7 +345,7 @@ resource "aws_cloudwatch_event_target" "notify_curator" {
 
       Registry: <registry>
       Record:   <recordId>
-      By:       <principal>
+      ARN:      <recordArn>
       At:       <time>
 
       Review it in the AgentCore console under Discover > Agent Registry,

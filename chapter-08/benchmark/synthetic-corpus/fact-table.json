@@ -1,0 +1,1232 @@
+[
+ {
+  "family": "Veldrin",
+  "product": "Veldrin-9 flow controller",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "46 bar",
+    "sentence": "The Veldrin-9 flow controller has a maximum continuous operating pressure of 46 bar.",
+    "product": "Veldrin-9 flow controller"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "17 months",
+    "sentence": "The standard calibration interval of the Veldrin-9 flow controller is 17 months.",
+    "product": "Veldrin-9 flow controller"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-260",
+    "sentence": "A Veldrin-9 flow controller that skips its calibration shows error code K-260.",
+    "product": "Veldrin-9 flow controller"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-8508",
+    "sentence": "The service kit for the Veldrin-9 flow controller has part number QF-8508.",
+    "product": "Veldrin-9 flow controller"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "32 months",
+    "sentence": "The warranty on the Veldrin-9 flow controller lasts 32 months from the shipping date.",
+    "product": "Veldrin-9 flow controller"
+   }
+  ]
+ },
+ {
+  "family": "Veldrin",
+  "product": "Veldrin-3 dosing pump",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "35 bar",
+    "sentence": "The Veldrin-3 dosing pump has a maximum continuous operating pressure of 35 bar.",
+    "product": "Veldrin-3 dosing pump"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "30 months",
+    "sentence": "The standard calibration interval of the Veldrin-3 dosing pump is 30 months.",
+    "product": "Veldrin-3 dosing pump"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-175",
+    "sentence": "A Veldrin-3 dosing pump that skips its calibration shows error code K-175.",
+    "product": "Veldrin-3 dosing pump"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-1702",
+    "sentence": "The service kit for the Veldrin-3 dosing pump has part number QF-1702.",
+    "product": "Veldrin-3 dosing pump"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "42 months",
+    "sentence": "The warranty on the Veldrin-3 dosing pump lasts 42 months from the shipping date.",
+    "product": "Veldrin-3 dosing pump"
+   }
+  ]
+ },
+ {
+  "family": "Veldrin",
+  "product": "Veldrin-9 pressure sensor",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "44 bar",
+    "sentence": "The Veldrin-9 pressure sensor has a maximum continuous operating pressure of 44 bar.",
+    "product": "Veldrin-9 pressure sensor"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "10 months",
+    "sentence": "The standard calibration interval of the Veldrin-9 pressure sensor is 10 months.",
+    "product": "Veldrin-9 pressure sensor"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-983",
+    "sentence": "A Veldrin-9 pressure sensor that skips its calibration shows error code K-983.",
+    "product": "Veldrin-9 pressure sensor"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5711",
+    "sentence": "The service kit for the Veldrin-9 pressure sensor has part number QF-5711.",
+    "product": "Veldrin-9 pressure sensor"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "35 months",
+    "sentence": "The warranty on the Veldrin-9 pressure sensor lasts 35 months from the shipping date.",
+    "product": "Veldrin-9 pressure sensor"
+   }
+  ]
+ },
+ {
+  "family": "Veldrin",
+  "product": "Veldrin-3 heat exchanger",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "90 bar",
+    "sentence": "The Veldrin-3 heat exchanger has a maximum continuous operating pressure of 90 bar.",
+    "product": "Veldrin-3 heat exchanger"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "14 months",
+    "sentence": "The standard calibration interval of the Veldrin-3 heat exchanger is 14 months.",
+    "product": "Veldrin-3 heat exchanger"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-668",
+    "sentence": "A Veldrin-3 heat exchanger that skips its calibration shows error code K-668.",
+    "product": "Veldrin-3 heat exchanger"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-4204",
+    "sentence": "The service kit for the Veldrin-3 heat exchanger has part number QF-4204.",
+    "product": "Veldrin-3 heat exchanger"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "16 months",
+    "sentence": "The warranty on the Veldrin-3 heat exchanger lasts 16 months from the shipping date.",
+    "product": "Veldrin-3 heat exchanger"
+   }
+  ]
+ },
+ {
+  "family": "Veldrin",
+  "product": "Veldrin-5 relay gateway",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "22 bar",
+    "sentence": "The Veldrin-5 relay gateway has a maximum continuous operating pressure of 22 bar.",
+    "product": "Veldrin-5 relay gateway"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "7 months",
+    "sentence": "The standard calibration interval of the Veldrin-5 relay gateway is 7 months.",
+    "product": "Veldrin-5 relay gateway"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-582",
+    "sentence": "A Veldrin-5 relay gateway that skips its calibration shows error code K-582.",
+    "product": "Veldrin-5 relay gateway"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-6169",
+    "sentence": "The service kit for the Veldrin-5 relay gateway has part number QF-6169.",
+    "product": "Veldrin-5 relay gateway"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "17 months",
+    "sentence": "The warranty on the Veldrin-5 relay gateway lasts 17 months from the shipping date.",
+    "product": "Veldrin-5 relay gateway"
+   }
+  ]
+ },
+ {
+  "family": "Ostrava",
+  "product": "Ostrava-3 flow controller",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "58 bar",
+    "sentence": "The Ostrava-3 flow controller has a maximum continuous operating pressure of 58 bar.",
+    "product": "Ostrava-3 flow controller"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "19 months",
+    "sentence": "The standard calibration interval of the Ostrava-3 flow controller is 19 months.",
+    "product": "Ostrava-3 flow controller"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-741",
+    "sentence": "A Ostrava-3 flow controller that skips its calibration shows error code K-741.",
+    "product": "Ostrava-3 flow controller"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-4890",
+    "sentence": "The service kit for the Ostrava-3 flow controller has part number QF-4890.",
+    "product": "Ostrava-3 flow controller"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "28 months",
+    "sentence": "The warranty on the Ostrava-3 flow controller lasts 28 months from the shipping date.",
+    "product": "Ostrava-3 flow controller"
+   }
+  ]
+ },
+ {
+  "family": "Ostrava",
+  "product": "Ostrava-6 dosing pump",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "74 bar",
+    "sentence": "The Ostrava-6 dosing pump has a maximum continuous operating pressure of 74 bar.",
+    "product": "Ostrava-6 dosing pump"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "20 months",
+    "sentence": "The standard calibration interval of the Ostrava-6 dosing pump is 20 months.",
+    "product": "Ostrava-6 dosing pump"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-833",
+    "sentence": "A Ostrava-6 dosing pump that skips its calibration shows error code K-833.",
+    "product": "Ostrava-6 dosing pump"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-8630",
+    "sentence": "The service kit for the Ostrava-6 dosing pump has part number QF-8630.",
+    "product": "Ostrava-6 dosing pump"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "20 months",
+    "sentence": "The warranty on the Ostrava-6 dosing pump lasts 20 months from the shipping date.",
+    "product": "Ostrava-6 dosing pump"
+   }
+  ]
+ },
+ {
+  "family": "Ostrava",
+  "product": "Ostrava-5 pressure sensor",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "33 bar",
+    "sentence": "The Ostrava-5 pressure sensor has a maximum continuous operating pressure of 33 bar.",
+    "product": "Ostrava-5 pressure sensor"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "11 months",
+    "sentence": "The standard calibration interval of the Ostrava-5 pressure sensor is 11 months.",
+    "product": "Ostrava-5 pressure sensor"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-525",
+    "sentence": "A Ostrava-5 pressure sensor that skips its calibration shows error code K-525.",
+    "product": "Ostrava-5 pressure sensor"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-6811",
+    "sentence": "The service kit for the Ostrava-5 pressure sensor has part number QF-6811.",
+    "product": "Ostrava-5 pressure sensor"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "23 months",
+    "sentence": "The warranty on the Ostrava-5 pressure sensor lasts 23 months from the shipping date.",
+    "product": "Ostrava-5 pressure sensor"
+   }
+  ]
+ },
+ {
+  "family": "Ostrava",
+  "product": "Ostrava-9 heat exchanger",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "74 bar",
+    "sentence": "The Ostrava-9 heat exchanger has a maximum continuous operating pressure of 74 bar.",
+    "product": "Ostrava-9 heat exchanger"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "31 months",
+    "sentence": "The standard calibration interval of the Ostrava-9 heat exchanger is 31 months.",
+    "product": "Ostrava-9 heat exchanger"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-982",
+    "sentence": "A Ostrava-9 heat exchanger that skips its calibration shows error code K-982.",
+    "product": "Ostrava-9 heat exchanger"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-4125",
+    "sentence": "The service kit for the Ostrava-9 heat exchanger has part number QF-4125.",
+    "product": "Ostrava-9 heat exchanger"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "38 months",
+    "sentence": "The warranty on the Ostrava-9 heat exchanger lasts 38 months from the shipping date.",
+    "product": "Ostrava-9 heat exchanger"
+   }
+  ]
+ },
+ {
+  "family": "Ostrava",
+  "product": "Ostrava-6 relay gateway",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "16 bar",
+    "sentence": "The Ostrava-6 relay gateway has a maximum continuous operating pressure of 16 bar.",
+    "product": "Ostrava-6 relay gateway"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "10 months",
+    "sentence": "The standard calibration interval of the Ostrava-6 relay gateway is 10 months.",
+    "product": "Ostrava-6 relay gateway"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-718",
+    "sentence": "A Ostrava-6 relay gateway that skips its calibration shows error code K-718.",
+    "product": "Ostrava-6 relay gateway"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5410",
+    "sentence": "The service kit for the Ostrava-6 relay gateway has part number QF-5410.",
+    "product": "Ostrava-6 relay gateway"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "40 months",
+    "sentence": "The warranty on the Ostrava-6 relay gateway lasts 40 months from the shipping date.",
+    "product": "Ostrava-6 relay gateway"
+   }
+  ]
+ },
+ {
+  "family": "Pelham",
+  "product": "Pelham-8 flow controller",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "30 bar",
+    "sentence": "The Pelham-8 flow controller has a maximum continuous operating pressure of 30 bar.",
+    "product": "Pelham-8 flow controller"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "36 months",
+    "sentence": "The standard calibration interval of the Pelham-8 flow controller is 36 months.",
+    "product": "Pelham-8 flow controller"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-226",
+    "sentence": "A Pelham-8 flow controller that skips its calibration shows error code K-226.",
+    "product": "Pelham-8 flow controller"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5378",
+    "sentence": "The service kit for the Pelham-8 flow controller has part number QF-5378.",
+    "product": "Pelham-8 flow controller"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "13 months",
+    "sentence": "The warranty on the Pelham-8 flow controller lasts 13 months from the shipping date.",
+    "product": "Pelham-8 flow controller"
+   }
+  ]
+ },
+ {
+  "family": "Pelham",
+  "product": "Pelham-8 dosing pump",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "60 bar",
+    "sentence": "The Pelham-8 dosing pump has a maximum continuous operating pressure of 60 bar.",
+    "product": "Pelham-8 dosing pump"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "26 months",
+    "sentence": "The standard calibration interval of the Pelham-8 dosing pump is 26 months.",
+    "product": "Pelham-8 dosing pump"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-818",
+    "sentence": "A Pelham-8 dosing pump that skips its calibration shows error code K-818.",
+    "product": "Pelham-8 dosing pump"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-2085",
+    "sentence": "The service kit for the Pelham-8 dosing pump has part number QF-2085.",
+    "product": "Pelham-8 dosing pump"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "33 months",
+    "sentence": "The warranty on the Pelham-8 dosing pump lasts 33 months from the shipping date.",
+    "product": "Pelham-8 dosing pump"
+   }
+  ]
+ },
+ {
+  "family": "Pelham",
+  "product": "Pelham-5 pressure sensor",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "75 bar",
+    "sentence": "The Pelham-5 pressure sensor has a maximum continuous operating pressure of 75 bar.",
+    "product": "Pelham-5 pressure sensor"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "12 months",
+    "sentence": "The standard calibration interval of the Pelham-5 pressure sensor is 12 months.",
+    "product": "Pelham-5 pressure sensor"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-556",
+    "sentence": "A Pelham-5 pressure sensor that skips its calibration shows error code K-556.",
+    "product": "Pelham-5 pressure sensor"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-6645",
+    "sentence": "The service kit for the Pelham-5 pressure sensor has part number QF-6645.",
+    "product": "Pelham-5 pressure sensor"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "43 months",
+    "sentence": "The warranty on the Pelham-5 pressure sensor lasts 43 months from the shipping date.",
+    "product": "Pelham-5 pressure sensor"
+   }
+  ]
+ },
+ {
+  "family": "Pelham",
+  "product": "Pelham-8 heat exchanger",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "48 bar",
+    "sentence": "The Pelham-8 heat exchanger has a maximum continuous operating pressure of 48 bar.",
+    "product": "Pelham-8 heat exchanger"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "27 months",
+    "sentence": "The standard calibration interval of the Pelham-8 heat exchanger is 27 months.",
+    "product": "Pelham-8 heat exchanger"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-325",
+    "sentence": "A Pelham-8 heat exchanger that skips its calibration shows error code K-325.",
+    "product": "Pelham-8 heat exchanger"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-1269",
+    "sentence": "The service kit for the Pelham-8 heat exchanger has part number QF-1269.",
+    "product": "Pelham-8 heat exchanger"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "27 months",
+    "sentence": "The warranty on the Pelham-8 heat exchanger lasts 27 months from the shipping date.",
+    "product": "Pelham-8 heat exchanger"
+   }
+  ]
+ },
+ {
+  "family": "Pelham",
+  "product": "Pelham-7 relay gateway",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "81 bar",
+    "sentence": "The Pelham-7 relay gateway has a maximum continuous operating pressure of 81 bar.",
+    "product": "Pelham-7 relay gateway"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "21 months",
+    "sentence": "The standard calibration interval of the Pelham-7 relay gateway is 21 months.",
+    "product": "Pelham-7 relay gateway"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-374",
+    "sentence": "A Pelham-7 relay gateway that skips its calibration shows error code K-374.",
+    "product": "Pelham-7 relay gateway"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-1117",
+    "sentence": "The service kit for the Pelham-7 relay gateway has part number QF-1117.",
+    "product": "Pelham-7 relay gateway"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "25 months",
+    "sentence": "The warranty on the Pelham-7 relay gateway lasts 25 months from the shipping date.",
+    "product": "Pelham-7 relay gateway"
+   }
+  ]
+ },
+ {
+  "family": "Kestrel",
+  "product": "Kestrel-4 flow controller",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "63 bar",
+    "sentence": "The Kestrel-4 flow controller has a maximum continuous operating pressure of 63 bar.",
+    "product": "Kestrel-4 flow controller"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "11 months",
+    "sentence": "The standard calibration interval of the Kestrel-4 flow controller is 11 months.",
+    "product": "Kestrel-4 flow controller"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-882",
+    "sentence": "A Kestrel-4 flow controller that skips its calibration shows error code K-882.",
+    "product": "Kestrel-4 flow controller"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-9376",
+    "sentence": "The service kit for the Kestrel-4 flow controller has part number QF-9376.",
+    "product": "Kestrel-4 flow controller"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "31 months",
+    "sentence": "The warranty on the Kestrel-4 flow controller lasts 31 months from the shipping date.",
+    "product": "Kestrel-4 flow controller"
+   }
+  ]
+ },
+ {
+  "family": "Kestrel",
+  "product": "Kestrel-3 dosing pump",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "60 bar",
+    "sentence": "The Kestrel-3 dosing pump has a maximum continuous operating pressure of 60 bar.",
+    "product": "Kestrel-3 dosing pump"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "23 months",
+    "sentence": "The standard calibration interval of the Kestrel-3 dosing pump is 23 months.",
+    "product": "Kestrel-3 dosing pump"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-363",
+    "sentence": "A Kestrel-3 dosing pump that skips its calibration shows error code K-363.",
+    "product": "Kestrel-3 dosing pump"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5651",
+    "sentence": "The service kit for the Kestrel-3 dosing pump has part number QF-5651.",
+    "product": "Kestrel-3 dosing pump"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "43 months",
+    "sentence": "The warranty on the Kestrel-3 dosing pump lasts 43 months from the shipping date.",
+    "product": "Kestrel-3 dosing pump"
+   }
+  ]
+ },
+ {
+  "family": "Kestrel",
+  "product": "Kestrel-8 pressure sensor",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "19 bar",
+    "sentence": "The Kestrel-8 pressure sensor has a maximum continuous operating pressure of 19 bar.",
+    "product": "Kestrel-8 pressure sensor"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "8 months",
+    "sentence": "The standard calibration interval of the Kestrel-8 pressure sensor is 8 months.",
+    "product": "Kestrel-8 pressure sensor"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-740",
+    "sentence": "A Kestrel-8 pressure sensor that skips its calibration shows error code K-740.",
+    "product": "Kestrel-8 pressure sensor"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-2577",
+    "sentence": "The service kit for the Kestrel-8 pressure sensor has part number QF-2577.",
+    "product": "Kestrel-8 pressure sensor"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "34 months",
+    "sentence": "The warranty on the Kestrel-8 pressure sensor lasts 34 months from the shipping date.",
+    "product": "Kestrel-8 pressure sensor"
+   }
+  ]
+ },
+ {
+  "family": "Kestrel",
+  "product": "Kestrel-2 heat exchanger",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "27 bar",
+    "sentence": "The Kestrel-2 heat exchanger has a maximum continuous operating pressure of 27 bar.",
+    "product": "Kestrel-2 heat exchanger"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "33 months",
+    "sentence": "The standard calibration interval of the Kestrel-2 heat exchanger is 33 months.",
+    "product": "Kestrel-2 heat exchanger"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-935",
+    "sentence": "A Kestrel-2 heat exchanger that skips its calibration shows error code K-935.",
+    "product": "Kestrel-2 heat exchanger"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5488",
+    "sentence": "The service kit for the Kestrel-2 heat exchanger has part number QF-5488.",
+    "product": "Kestrel-2 heat exchanger"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "18 months",
+    "sentence": "The warranty on the Kestrel-2 heat exchanger lasts 18 months from the shipping date.",
+    "product": "Kestrel-2 heat exchanger"
+   }
+  ]
+ },
+ {
+  "family": "Kestrel",
+  "product": "Kestrel-4 relay gateway",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "71 bar",
+    "sentence": "The Kestrel-4 relay gateway has a maximum continuous operating pressure of 71 bar.",
+    "product": "Kestrel-4 relay gateway"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "11 months",
+    "sentence": "The standard calibration interval of the Kestrel-4 relay gateway is 11 months.",
+    "product": "Kestrel-4 relay gateway"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-635",
+    "sentence": "A Kestrel-4 relay gateway that skips its calibration shows error code K-635.",
+    "product": "Kestrel-4 relay gateway"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5112",
+    "sentence": "The service kit for the Kestrel-4 relay gateway has part number QF-5112.",
+    "product": "Kestrel-4 relay gateway"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "16 months",
+    "sentence": "The warranty on the Kestrel-4 relay gateway lasts 16 months from the shipping date.",
+    "product": "Kestrel-4 relay gateway"
+   }
+  ]
+ },
+ {
+  "family": "Tamsin",
+  "product": "Tamsin-9 flow controller",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "35 bar",
+    "sentence": "The Tamsin-9 flow controller has a maximum continuous operating pressure of 35 bar.",
+    "product": "Tamsin-9 flow controller"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "33 months",
+    "sentence": "The standard calibration interval of the Tamsin-9 flow controller is 33 months.",
+    "product": "Tamsin-9 flow controller"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-493",
+    "sentence": "A Tamsin-9 flow controller that skips its calibration shows error code K-493.",
+    "product": "Tamsin-9 flow controller"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-9944",
+    "sentence": "The service kit for the Tamsin-9 flow controller has part number QF-9944.",
+    "product": "Tamsin-9 flow controller"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "29 months",
+    "sentence": "The warranty on the Tamsin-9 flow controller lasts 29 months from the shipping date.",
+    "product": "Tamsin-9 flow controller"
+   }
+  ]
+ },
+ {
+  "family": "Tamsin",
+  "product": "Tamsin-6 dosing pump",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "46 bar",
+    "sentence": "The Tamsin-6 dosing pump has a maximum continuous operating pressure of 46 bar.",
+    "product": "Tamsin-6 dosing pump"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "9 months",
+    "sentence": "The standard calibration interval of the Tamsin-6 dosing pump is 9 months.",
+    "product": "Tamsin-6 dosing pump"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-542",
+    "sentence": "A Tamsin-6 dosing pump that skips its calibration shows error code K-542.",
+    "product": "Tamsin-6 dosing pump"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-9212",
+    "sentence": "The service kit for the Tamsin-6 dosing pump has part number QF-9212.",
+    "product": "Tamsin-6 dosing pump"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "48 months",
+    "sentence": "The warranty on the Tamsin-6 dosing pump lasts 48 months from the shipping date.",
+    "product": "Tamsin-6 dosing pump"
+   }
+  ]
+ },
+ {
+  "family": "Tamsin",
+  "product": "Tamsin-8 pressure sensor",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "35 bar",
+    "sentence": "The Tamsin-8 pressure sensor has a maximum continuous operating pressure of 35 bar.",
+    "product": "Tamsin-8 pressure sensor"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "14 months",
+    "sentence": "The standard calibration interval of the Tamsin-8 pressure sensor is 14 months.",
+    "product": "Tamsin-8 pressure sensor"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-438",
+    "sentence": "A Tamsin-8 pressure sensor that skips its calibration shows error code K-438.",
+    "product": "Tamsin-8 pressure sensor"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5400",
+    "sentence": "The service kit for the Tamsin-8 pressure sensor has part number QF-5400.",
+    "product": "Tamsin-8 pressure sensor"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "27 months",
+    "sentence": "The warranty on the Tamsin-8 pressure sensor lasts 27 months from the shipping date.",
+    "product": "Tamsin-8 pressure sensor"
+   }
+  ]
+ },
+ {
+  "family": "Tamsin",
+  "product": "Tamsin-5 heat exchanger",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "39 bar",
+    "sentence": "The Tamsin-5 heat exchanger has a maximum continuous operating pressure of 39 bar.",
+    "product": "Tamsin-5 heat exchanger"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "16 months",
+    "sentence": "The standard calibration interval of the Tamsin-5 heat exchanger is 16 months.",
+    "product": "Tamsin-5 heat exchanger"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-137",
+    "sentence": "A Tamsin-5 heat exchanger that skips its calibration shows error code K-137.",
+    "product": "Tamsin-5 heat exchanger"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-6983",
+    "sentence": "The service kit for the Tamsin-5 heat exchanger has part number QF-6983.",
+    "product": "Tamsin-5 heat exchanger"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "46 months",
+    "sentence": "The warranty on the Tamsin-5 heat exchanger lasts 46 months from the shipping date.",
+    "product": "Tamsin-5 heat exchanger"
+   }
+  ]
+ },
+ {
+  "family": "Tamsin",
+  "product": "Tamsin-2 relay gateway",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "35 bar",
+    "sentence": "The Tamsin-2 relay gateway has a maximum continuous operating pressure of 35 bar.",
+    "product": "Tamsin-2 relay gateway"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "30 months",
+    "sentence": "The standard calibration interval of the Tamsin-2 relay gateway is 30 months.",
+    "product": "Tamsin-2 relay gateway"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-330",
+    "sentence": "A Tamsin-2 relay gateway that skips its calibration shows error code K-330.",
+    "product": "Tamsin-2 relay gateway"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-7678",
+    "sentence": "The service kit for the Tamsin-2 relay gateway has part number QF-7678.",
+    "product": "Tamsin-2 relay gateway"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "45 months",
+    "sentence": "The warranty on the Tamsin-2 relay gateway lasts 45 months from the shipping date.",
+    "product": "Tamsin-2 relay gateway"
+   }
+  ]
+ },
+ {
+  "family": "Brackwater",
+  "product": "Brackwater-2 flow controller",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "48 bar",
+    "sentence": "The Brackwater-2 flow controller has a maximum continuous operating pressure of 48 bar.",
+    "product": "Brackwater-2 flow controller"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "11 months",
+    "sentence": "The standard calibration interval of the Brackwater-2 flow controller is 11 months.",
+    "product": "Brackwater-2 flow controller"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-678",
+    "sentence": "A Brackwater-2 flow controller that skips its calibration shows error code K-678.",
+    "product": "Brackwater-2 flow controller"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-9183",
+    "sentence": "The service kit for the Brackwater-2 flow controller has part number QF-9183.",
+    "product": "Brackwater-2 flow controller"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "45 months",
+    "sentence": "The warranty on the Brackwater-2 flow controller lasts 45 months from the shipping date.",
+    "product": "Brackwater-2 flow controller"
+   }
+  ]
+ },
+ {
+  "family": "Brackwater",
+  "product": "Brackwater-3 dosing pump",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "61 bar",
+    "sentence": "The Brackwater-3 dosing pump has a maximum continuous operating pressure of 61 bar.",
+    "product": "Brackwater-3 dosing pump"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "32 months",
+    "sentence": "The standard calibration interval of the Brackwater-3 dosing pump is 32 months.",
+    "product": "Brackwater-3 dosing pump"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-414",
+    "sentence": "A Brackwater-3 dosing pump that skips its calibration shows error code K-414.",
+    "product": "Brackwater-3 dosing pump"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5180",
+    "sentence": "The service kit for the Brackwater-3 dosing pump has part number QF-5180.",
+    "product": "Brackwater-3 dosing pump"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "27 months",
+    "sentence": "The warranty on the Brackwater-3 dosing pump lasts 27 months from the shipping date.",
+    "product": "Brackwater-3 dosing pump"
+   }
+  ]
+ },
+ {
+  "family": "Brackwater",
+  "product": "Brackwater-2 pressure sensor",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "88 bar",
+    "sentence": "The Brackwater-2 pressure sensor has a maximum continuous operating pressure of 88 bar.",
+    "product": "Brackwater-2 pressure sensor"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "31 months",
+    "sentence": "The standard calibration interval of the Brackwater-2 pressure sensor is 31 months.",
+    "product": "Brackwater-2 pressure sensor"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-624",
+    "sentence": "A Brackwater-2 pressure sensor that skips its calibration shows error code K-624.",
+    "product": "Brackwater-2 pressure sensor"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-1454",
+    "sentence": "The service kit for the Brackwater-2 pressure sensor has part number QF-1454.",
+    "product": "Brackwater-2 pressure sensor"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "26 months",
+    "sentence": "The warranty on the Brackwater-2 pressure sensor lasts 26 months from the shipping date.",
+    "product": "Brackwater-2 pressure sensor"
+   }
+  ]
+ },
+ {
+  "family": "Brackwater",
+  "product": "Brackwater-5 heat exchanger",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "22 bar",
+    "sentence": "The Brackwater-5 heat exchanger has a maximum continuous operating pressure of 22 bar.",
+    "product": "Brackwater-5 heat exchanger"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "28 months",
+    "sentence": "The standard calibration interval of the Brackwater-5 heat exchanger is 28 months.",
+    "product": "Brackwater-5 heat exchanger"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-752",
+    "sentence": "A Brackwater-5 heat exchanger that skips its calibration shows error code K-752.",
+    "product": "Brackwater-5 heat exchanger"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-6550",
+    "sentence": "The service kit for the Brackwater-5 heat exchanger has part number QF-6550.",
+    "product": "Brackwater-5 heat exchanger"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "48 months",
+    "sentence": "The warranty on the Brackwater-5 heat exchanger lasts 48 months from the shipping date.",
+    "product": "Brackwater-5 heat exchanger"
+   }
+  ]
+ },
+ {
+  "family": "Brackwater",
+  "product": "Brackwater-9 relay gateway",
+  "facts": [
+   {
+    "key": "pressure",
+    "label": "maximum continuous operating pressure",
+    "value": "40 bar",
+    "sentence": "The Brackwater-9 relay gateway has a maximum continuous operating pressure of 40 bar.",
+    "product": "Brackwater-9 relay gateway"
+   },
+   {
+    "key": "calibration",
+    "label": "standard calibration interval",
+    "value": "24 months",
+    "sentence": "The standard calibration interval of the Brackwater-9 relay gateway is 24 months.",
+    "product": "Brackwater-9 relay gateway"
+   },
+   {
+    "key": "error",
+    "label": "error code shown when calibration is skipped",
+    "value": "K-315",
+    "sentence": "A Brackwater-9 relay gateway that skips its calibration shows error code K-315.",
+    "product": "Brackwater-9 relay gateway"
+   },
+   {
+    "key": "kit",
+    "label": "service kit part number",
+    "value": "QF-5034",
+    "sentence": "The service kit for the Brackwater-9 relay gateway has part number QF-5034.",
+    "product": "Brackwater-9 relay gateway"
+   },
+   {
+    "key": "warranty",
+    "label": "warranty period",
+    "value": "32 months",
+    "sentence": "The warranty on the Brackwater-9 relay gateway lasts 32 months from the shipping date.",
+    "product": "Brackwater-9 relay gateway"
+   }
+  ]
+ }
+]

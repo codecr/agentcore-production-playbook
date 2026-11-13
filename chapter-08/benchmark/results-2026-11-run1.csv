@@ -1,0 +1,11 @@
+strategy,kind,run,status,unparsed,Builtin.Correctness,Builtin.Completeness,Builtin.Helpfulness,Builtin.Faithfulness,Builtin.ContextRelevance,Builtin.ContextCoverage
+custom,gen,1,COMPLETED,0,1.0,1.0,0.8333000000000002,0.97,,
+custom,ret,1,COMPLETED,0,,,,,0.26,0.96
+fixed-size,gen,1,COMPLETED,0,1.0,1.0,0.8333039999999999,0.97,,
+fixed-size,ret,1,COMPLETED,0,,,,,0.32000000000000006,1.0
+hierarchical,gen,1,COMPLETED,0,1.0,1.0,0.8399680000000003,0.93,,
+hierarchical,ret,1,COMPLETED,0,,,,,0.46928000000000003,1.0
+none,gen,1,COMPLETED,0,1.0,1.0,0.8733080000000001,1.0,,
+none,ret,1,COMPLETED,0,,,,,0.35600000000000004,1.0
+semantic,gen,1,COMPLETED,0,0.94,0.95,0.819972,0.97,,
+semantic,ret,1,COMPLETED,0,,,,,0.26000000000000006,0.96

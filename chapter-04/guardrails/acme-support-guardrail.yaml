@@ -141,6 +141,19 @@ Resources:
       # =============================================================
       # Concern E: Hallucination prevention (contextual grounding)
       # =============================================================
+      # 2nd edition note: grounding uses the CLASSIC tier by default (English,
+      # French, Spanish; built for QA and summarization). For a multi-turn chat
+      # agent, consider the STANDARD tier (Oct 20, 2026), which requires a
+      # cross-Region guardrail profile. In the API this is
+      # contextualGroundingPolicyConfig.tierConfig.tierName = STANDARD plus
+      # crossRegionConfig.guardrailProfileIdentifier. In CloudFormation, live-tested
+      # 2026-11-11 (CT-04-06): content filters and denied topics take
+      # ContentPolicyConfig.ContentFiltersTierConfig.TierName and
+      # TopicPolicyConfig.TopicsTierConfig.TierName (STANDARD) plus
+      # CrossRegionConfig.GuardrailProfileArn (arn:aws:bedrock:<region>:<account>:
+      # guardrail-profile/us.guardrail.v1:0), and the stack deploys. The resource
+      # schema has no tier property for ContextualGroundingPolicyConfig (only
+      # FiltersConfig), so the grounding tier cannot be set from this template.
       ContextualGroundingPolicyConfig:
         FiltersConfig:
           - Type: GROUNDING
@@ -167,8 +180,8 @@ Resources:
 
 Outputs:
   GuardrailId:
-    Description: ID of the created Guardrail
-    Value: !Ref AcmeSupportGuardrail
+    Description: ID of the created Guardrail (Ref returns the ARN; GetAtt returns the ID)
+    Value: !GetAtt AcmeSupportGuardrail.GuardrailId
     Export:
       Name: !Sub "${AWS::StackName}-GuardrailId"
 

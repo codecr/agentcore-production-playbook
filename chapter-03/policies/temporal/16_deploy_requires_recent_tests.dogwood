@@ -1,0 +1,27 @@
+// Policy: 16_deploy_requires_recent_tests   (Dogwood temporal policy)
+// Category: Stateful control (Chapter 3, Section 3.7)
+// Intent: Grant a production deploy only if run_tests completed successfully
+//         in the same policy session within the last five minutes.
+//
+// Pair with a plain permit for ci___run_tests: an action is recorded as a
+//   ::response event only if some policy allowed it. Strict validation may
+//   reject that plain permit as "Overly Permissive"; the author created it
+//   with --validation-mode IGNORE_ALL_FINDINGS and kept strict validation on
+//   the temporal policy (2026-10-12 lab).
+// Serialize in the client: the ::response event exists only after
+//   run_tests finishes. In the same lab, sending both calls in parallel got
+//   the deploy denied 98 of 100 times; sending deploy after the response
+//   arrived, 0 of 600. A Strands agent issued both in the same turn in all
+//   10 sessions.
+// Policy 09 still applies (forbid outside business hours).
+
+permit (
+  principal,
+  action == AgentCore::Action::"devops-prod___deploy",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID"
+)
+when temporal {
+  formerly within 5m AgentCore::Action::"ci___run_tests"::response{
+    eventResource: resource
+  }
+};

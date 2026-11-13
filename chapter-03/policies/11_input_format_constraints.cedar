@@ -1,19 +1,17 @@
 // Policy: 11_input_format_constraints
 // Category: Input validation
-// Intent: Enforce format constraints on string inputs using Cedar's `like`
-//         pattern matching. This example validates that ticket_id follows
-//         the ticket-<anything> format before a ticket update is permitted.
-//         The pattern extends to other string-shaped inputs (user IDs as
-//         UUIDs, etc.) the same way — add a clause per field. This is not a
-//         substitute for tool-level validation, but it catches obvious
-//         malformed inputs early.
+// Intent: Refuse ticket updates whose ticket_id does not follow the
+//         ticket-<anything> format. This constrains a model-written value,
+//         which is safe: constraining what the model wrote never trusts it.
+//         Not a substitute for tool-level validation.
+// 2nd edition change: now a forbid (see policy 10 for why).
 
-permit (
+forbid (
   principal,
   action == AgentCore::Action::"support___update_ticket",
   resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID"
 )
-when {
+unless {
   context.input has ticket_id &&
   context.input.ticket_id like "ticket-*"
 };

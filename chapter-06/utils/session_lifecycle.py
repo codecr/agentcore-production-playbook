@@ -47,6 +47,7 @@ from botocore.exceptions import ClientError
 # =========================================================================
 
 MIN_SESSION_ID_LENGTH = 33   # Validated client-side by AgentCore
+MAX_SESSION_ID_LENGTH = 256  # runtimeSessionId max length in the service model
 
 
 def generate_session_id(
@@ -88,7 +89,7 @@ def generate_session_id(
     )
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     session_id = f"{prefix}-{digest[:48]}"
-    assert len(session_id) >= MIN_SESSION_ID_LENGTH
+    assert MIN_SESSION_ID_LENGTH <= len(session_id) <= MAX_SESSION_ID_LENGTH
     return session_id
 
 

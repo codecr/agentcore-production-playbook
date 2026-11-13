@@ -1,0 +1,15 @@
+// Guardrails in Policy at the Gateway: Gate 4 enforced outside the agent.
+// suppressOutput runs AFTER the tool and withholds its result from the caller
+// when the sensitive-information check finds an SSN. The tool still runs.
+// suppressOutput may read only context.output.* paths and its condition must
+// consist only of guardrail checks. Adjust "text" to your tool's output field.
+// Untested by the author.
+
+suppressOutput (
+  principal,
+  action == AgentCore::Action::"crm___get_customer_notes",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID"
+)
+when guardrails {
+  BedrockGuardrails::SensitiveInformation(["US_SOCIAL_SECURITY_NUMBER"], [context.output.text]).count() > 0
+};

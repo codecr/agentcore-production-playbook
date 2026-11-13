@@ -1,7 +1,7 @@
 """
 budget_guard.py — Aggregate spend control across sessions.
 
-Accompanies Chapter 12 of "AgentCore in Production: The Operator's Playbook".
+Accompanies Chapter 13 of "AgentCore in Production: The Operator's Playbook".
 
 WHY THIS EXISTS
 
@@ -11,9 +11,16 @@ scoped to exactly one session, and a batch workload that opens two thousand
 sessions a month has two thousand independent budgets that sum to a number
 nobody chose.
 
-That is the incident in Chapter 12 Section 12.1: every session stayed inside
-its limit, every payment was authorized, and the monthly total was four
-thousand dollars for data the organization had already bought.
+That is the incident in Chapter 13 Section 13.1: every session stayed inside
+its limit, every payment was authorized, and the monthly total was roughly
+$3,600 for a thirty-day pass the organization had already bought, thirty
+times a day.
+
+2nd edition (October 2026): AgentCore Policy now accepts Dogwood temporal
+policies, which can cap spend per *policy session* over at most 24 hours
+(see daily-spend.dogwood). That fence is useful and fast, but it resets whenever
+a temporal policy is created, updated, or deleted, and it cannot see a month.
+This module stays the durable ledger.
 
 This module is the layer AgentCore does not provide: a budget that spans
 sessions, with three enforcement tiers and a circuit breaker.
@@ -145,7 +152,7 @@ class BudgetPolicy:
         return problems
 
 
-# The Acme Lending credit-analysis agent from Section 12.1, with the controls
+# The Acme Lending credit-analysis agent from Section 13.1, with the controls
 # it should have had.
 ACME_CREDIT_AGENT_BUDGET = BudgetPolicy(
     agent_name="acme-lending-credit-analysis",
@@ -153,7 +160,7 @@ ACME_CREDIT_AGENT_BUDGET = BudgetPolicy(
     daily_cap_usd=Decimal("40.00"),
     monthly_cap_usd=Decimal("900.00"),
     allowed_payees=frozenset({
-        "bureau.example.com",
+        "firmdata.example.com",
         "marketdata.example.com",
         "news.example.com",
     }),
@@ -399,7 +406,7 @@ class BudgetGuard:
 # =========================================================================
 # Duplicate-purchase detection
 # =========================================================================
-# The specific failure from Section 12.1: the agent re-bought access it had
+# The specific failure from Section 13.1: the agent re-bought access it had
 # already paid for, once per session, because nothing carried the purchase
 # across sessions. The fix is a purchase ledger the agent consults first —
 # and the natural home for it is the same Memory the agent already has

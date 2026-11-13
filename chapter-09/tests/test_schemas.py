@@ -35,6 +35,8 @@ from schemas.production_schemas import (  # noqa: E402
 from utils.schema_registry import (  # noqa: E402
     SchemaRegistry,
     build_default_registry,
+    check_bedrock_subset,
+    check_ranges,
     compare_versions,
     validate_schema,
 )
@@ -78,6 +80,8 @@ def test_tool_specs_are_strict(name, spec):
 # Sample payloads must validate — and counter-examples must not
 # =========================================================================
 
+REFUND_INPUT = ALL_TOOL_SPECS["issue_refund"]["toolSpec"]["inputSchema"]["json"]
+
 VALID_TRIAGE = {
     "priority": "P1",
     "category": "api-error",
@@ -106,10 +110,71 @@ def test_triage_rejects_extra_field():
         Draft202012Validator(TRIAGE_SCHEMA).validate(payload)
 
 
-def test_triage_rejects_out_of_range_confidence():
+def test_out_of_range_confidence_is_caught_after_parsing():
+    """Bedrock rejects minimum/maximum with HTTP 400, so the schema cannot
+    bound confidence. The range check runs after json.loads instead."""
     payload = {**VALID_TRIAGE, "confidence": 1.4}
-    with pytest.raises(Exception):
-        Draft202012Validator(TRIAGE_SCHEMA).validate(payload)
+    Draft202012Validator(TRIAGE_SCHEMA).validate(payload)  # shape is fine
+    assert check_ranges("ticket_triage", payload)          # range is not
+
+
+def test_in_range_triage_passes_range_check():
+    assert check_ranges("ticket_triage", VALID_TRIAGE) == []
+
+
+def test_refund_below_one_cent_is_caught_after_parsing():
+    args = {"invoice_id": "INV-00000001", "amount_cents": 0,
+            "currency": "USD", "reason_code": "goodwill"}
+    assert check_ranges("issue_refund", args)
+
+
+def test_long_summary_is_caught_after_parsing():
+    payload = {**VALID_TRIAGE, "summary": "x" * 141}
+    assert check_ranges("ticket_triage", payload)
+
+
+# =========================================================================
+# The Bedrock Structured Outputs subset (Draft 2020-12 is not enough)
+# =========================================================================
+
+@pytest.mark.parametrize("name,schema", sorted(ALL_SCHEMAS.items()))
+def test_schema_fits_bedrock_subset(name, schema):
+    assert check_bedrock_subset(schema) == []
+
+
+@pytest.mark.parametrize("name,spec", sorted(ALL_TOOL_SPECS.items()))
+def test_tool_input_schema_fits_bedrock_subset(name, spec):
+    assert check_bedrock_subset(spec["toolSpec"]["inputSchema"]["json"]) == []
+
+
+@pytest.mark.parametrize("keyword,value", [
+    ("minimum", 1), ("maximum", 1), ("multipleOf", 2),
+    ("minLength", 1), ("maxLength", 10),
+])
+def test_unsupported_keywords_are_flagged(keyword, value):
+    """The first edition shipped "minimum": 1 in the refund tool. Never again."""
+    schema = copy.deepcopy(REFUND_INPUT)
+    schema["properties"]["amount_cents"][keyword] = value
+    assert any(keyword in p for p in check_bedrock_subset(schema))
+
+
+def test_missing_additional_properties_is_flagged_for_bedrock():
+    schema = copy.deepcopy(REFUND_INPUT)
+    del schema["additionalProperties"]
+    assert any("additionalProperties" in p for p in check_bedrock_subset(schema))
+
+
+def test_too_many_optional_properties_is_flagged():
+    schema = {"type": "object", "additionalProperties": False, "required": [],
+              "properties": {f"f{i}": {"type": "string"} for i in range(13)}}
+    assert any("optional properties" in p for p in check_bedrock_subset(schema))
+
+
+def test_too_many_nullable_properties_is_flagged():
+    names = [f"f{i}" for i in range(17)]
+    schema = {"type": "object", "additionalProperties": False, "required": names,
+              "properties": {n: {"type": ["string", "null"]} for n in names}}
+    assert any("union-typed" in p for p in check_bedrock_subset(schema))
 
 
 def test_triage_accepts_null_tenant():
@@ -156,8 +221,9 @@ def test_registry_rejects_invalid_schema():
 
 
 def test_registry_qualified_name_includes_version():
-    """Two different schemas must never share a Bedrock schema name — the
-    grammar cache is keyed on it."""
+    """Two different contracts must never share a name. Not because of the
+    grammar cache (Bedrock keys it on the schema itself, per account), but
+    because logs, dashboards, and consumers read the name."""
     registry = build_default_registry()
     assert registry.latest("ticket_triage").qualified_name == "ticket_triage_v1"
 
@@ -187,15 +253,13 @@ def test_narrowing_an_enum_is_breaking():
     assert any("removed enum values" in c for c in diff["breaking"])
 
 
-def test_adding_an_enum_value_is_compatible_for_the_producer():
-    """Adding an enum value does not break the schema contract, but it does
-    change what consumers can receive. The registry labels it compatible;
-    the consumer review is still the team's job."""
+def test_adding_an_enum_value_is_breaking_for_consumers():
+    """The model can now emit a value consumers have never handled; every
+    `match` or lookup on the field needs a new case before the change ships."""
     new = copy.deepcopy(TRIAGE_SCHEMA)
     new["properties"]["priority"]["enum"] = ["P0", "P1", "P2", "P3", "P4"]
     diff = compare_versions(TRIAGE_SCHEMA, new)
-    assert not diff["breaking"]
-    assert any("added enum values" in c for c in diff["compatible"])
+    assert any("added enum values" in c for c in diff["breaking"])
 
 
 def test_adding_a_required_property_is_breaking():
@@ -380,15 +444,12 @@ def test_already_required_property_staying_required_is_not_flagged():
 
 
 # =========================================================================
-# Version compatibility — widening (enum constraint removed) is compatible
+# Version compatibility — widening (enum constraint removed) is breaking
 # =========================================================================
 
-def test_removing_an_enum_constraint_entirely_is_labeled_compatible():
-    """Dropping the enum so any string is now allowed is a widening, not a
-    narrowing — every value the old enum permitted is still permitted. This
-    used to be silent (neither breaking nor compatible); it should now be
-    recorded so consumers get an explicit compatible-change entry instead
-    of no record at all."""
+def test_removing_an_enum_constraint_entirely_is_breaking():
+    """Dropping the enum lets the model emit any string, the widest form of
+    adding enum values, so consumers that match on the field break."""
     old = {
         "properties": {"category": {"type": "string", "enum": ["a", "b"]}},
         "required": ["category"],
@@ -398,8 +459,7 @@ def test_removing_an_enum_constraint_entirely_is_labeled_compatible():
         "required": ["category"],
     }
     diff = compare_versions(old, new)
-    assert not diff["breaking"]
     assert any(
-        "removed enum constraint on 'category' (widening, compatible)" in c
-        for c in diff["compatible"]
+        "removed enum constraint on 'category' (widening, breaking for consumers)" in c
+        for c in diff["breaking"]
     )

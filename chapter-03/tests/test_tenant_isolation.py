@@ -298,7 +298,7 @@ def _admin_entities(uid: str, tenant: str, role: str) -> list:
 
 
 class TestPolicies05And06Combined:
-    """Policy 06 grants tenant admins an audited cross-tenant override.
+    """Policy 06 grants tenant admins a ticket-verified cross-tenant override.
 
     Cedar's forbid-overrides-permit model means a bare `forbid` in policy 05
     would make policy 06 permanently dead: 05 would win every time and the
@@ -324,14 +324,18 @@ class TestPolicies05And06Combined:
         return load_policy('06_admin_tenant_override_with_audit.cedar')
 
     def test_override_fires_in_isolation(self, policy_06_only):
-        """Baseline: policy 06 alone permits the audited cross-tenant call."""
+        """Baseline: policy 06 alone permits the ticket-verified cross-tenant call.
+
+        ticket_tenant is written by the REQUEST interceptor after it checked
+        the ticket with the ticketing system (interceptor/), never by the model.
+        """
         result = evaluate(
             policy_text=policy_06_only,
             principal='AgentCore::OAuthUser::"user-globex-admin"',
             action='AgentCore::Action::"billing___get_invoice_details"',
             resource=GATEWAY_ARN,
             context={'input': {'tenant_id': 'logistics-co',
-                               'audit_reason': 'ticket-4471'}},
+                               'ticket_tenant': 'logistics-co'}},
             entities=_admin_entities('user-globex-admin', 'globex-corp',
                                      'tenant_admin'),
         )
@@ -349,14 +353,28 @@ class TestPolicies05And06Combined:
             action='AgentCore::Action::"billing___get_invoice_details"',
             resource=GATEWAY_ARN,
             context={'input': {'tenant_id': 'logistics-co',
-                               'audit_reason': 'ticket-4471'}},
+                               'ticket_tenant': 'logistics-co'}},
             entities=_admin_entities('user-globex-admin', 'globex-corp',
                                      'tenant_admin'),
         )
         assert result.decision == cedarpy.Decision.Allow
 
-    def test_admin_without_audit_reason_is_denied(self, combined_policy):
-        """The override is the audit trail. No reason, no crossing."""
+    def test_override_does_not_extend_to_writes(self, combined_policy):
+        """Policy 05's carve-out covers the three read tools only."""
+        result = evaluate(
+            policy_text=combined_policy,
+            principal='AgentCore::OAuthUser::"user-globex-admin"',
+            action='AgentCore::Action::"billing___process_refund"',
+            resource=GATEWAY_ARN,
+            context={'input': {'tenant_id': 'logistics-co',
+                               'ticket_tenant': 'logistics-co'}},
+            entities=_admin_entities('user-globex-admin', 'globex-corp',
+                                     'tenant_admin'),
+        )
+        assert result.decision == cedarpy.Decision.Deny
+
+    def test_admin_without_verified_ticket_is_denied(self, combined_policy):
+        """No verified ticket, no crossing."""
         result = evaluate(
             policy_text=combined_policy,
             principal='AgentCore::OAuthUser::"user-globex-admin"',
@@ -368,31 +386,30 @@ class TestPolicies05And06Combined:
         )
         assert result.decision == cedarpy.Decision.Deny
 
-    def test_admin_with_malformed_audit_reason_is_denied(self, combined_policy):
-        """`audit_reason` must be ticket-shaped, not free text."""
+    def test_ticket_for_a_different_tenant_is_denied(self, combined_policy):
+        """A real ticket only opens the tenant it concerns."""
         result = evaluate(
             policy_text=combined_policy,
             principal='AgentCore::OAuthUser::"user-globex-admin"',
             action='AgentCore::Action::"billing___get_invoice_details"',
             resource=GATEWAY_ARN,
             context={'input': {'tenant_id': 'logistics-co',
-                               'audit_reason': 'because I said so'}},
+                               'ticket_tenant': 'umbrella-inc'}},
             entities=_admin_entities('user-globex-admin', 'globex-corp',
                                      'tenant_admin'),
         )
         assert result.decision == cedarpy.Decision.Deny
 
     def test_non_admin_cannot_use_the_override(self, combined_policy):
-        """A support agent with a perfectly good ticket number still cannot
-        cross tenants. The override is scoped to the role, not to the
-        presence of an audit_reason."""
+        """A support agent with a verified ticket still cannot cross
+        tenants. The override is scoped to the role claim."""
         result = evaluate(
             policy_text=combined_policy,
             principal='AgentCore::OAuthUser::"user-globex-001"',
             action='AgentCore::Action::"billing___get_invoice_details"',
             resource=GATEWAY_ARN,
             context={'input': {'tenant_id': 'logistics-co',
-                               'audit_reason': 'ticket-4471'}},
+                               'ticket_tenant': 'logistics-co'}},
             entities=_admin_entities('user-globex-001', 'globex-corp',
                                      'support_agent'),
         )

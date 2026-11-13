@@ -1,6 +1,21 @@
 # Chapter 8: Bedrock Knowledge Bases
 
-This folder accompanies Chapter 8 of *AgentCore in Production: The Operator's Playbook*.
+This folder accompanies Chapter 8 of *AgentCore in Production: The Operator's Playbook*, 2nd edition (October 2026).
+
+## What changed since the first edition
+
+| Area | First edition | Now |
+|---|---|---|
+| Eval role IAM actions | `bedrock-agent-runtime:Retrieve` / `:RetrieveAndGenerate` (not IAM actions) | `bedrock:Retrieve` on the KB ARNs, `bedrock:RetrieveAndGenerate` on `*` (no resource-level support), `bedrock:InvokeModel` on the inference profile and its foundation models |
+| `run_evaluation.py` | Model-evaluation job with pre-generated answers, unprefixed metric names | Native `RagEvaluation` jobs with `Builtin.*` metrics; optional retrieve-only job (`--retrieval-metrics`); `--repeats N` with mean and range |
+| Judge allowlist (gotcha 4) | Sonnet 4.x and Opus 4.x excluded | Resolved: Sonnet 4.5/4.6 and Opus 4.5-4.8 allowed. Nova Pro kept as a cross-family judge |
+| Ingestion alarms | Filters matched only the *managed* KB log schema | Filters match both the classic and the managed schema; dashboard referenced a metric that no stack published (fixed) |
+| Retrieval example | None | `retrieval/retrieve_for_tenant.py`: tenant filter plus reranking, no hybrid (S3 Vectors does not support it) |
+| Managed Knowledge Base | Did not exist | Chapter 8 Section 8.5; the comparison code is at github.com/codecr/mkb-vs-chunking |
+
+**Status.** Run against a live account on 2026-11-11: the Terraform, the ingestion of all five Knowledge Bases, `run_evaluation.py`, `run_baseline.py`, and the benchmark in Section 8.4 (Table 8.2). Not run: `retrieve_for_tenant.py`, the ingestion alarms, and the Managed Knowledge Base comparison.
+
+**Numbering.** The gotchas below use the book's numbering (Section 8.6): eight, with the Lambda custom chunker as number 8.
 
 ## What's here
 
@@ -11,8 +26,14 @@ chapter-08/
 │   │   ├── main.tf                  # 5 KBs, all 5 chunking strategies, S3 Vectors backend
 │   │   └── lambda/
 │   │       └── custom_chunker.py    # POST_CHUNKING Lambda used by the "custom" strategy
-│   ├── questions.jsonl              # 25-question ground-truth corpus
-│   └── run_evaluation.py            # Submits eval jobs, polls, aggregates results
+│   ├── questions.jsonl              # 25-question ground-truth corpus (April 2026, public docs)
+│   ├── synthetic-corpus/            # 6 documents of invented facts, fact table, sha256 (November 2026 re-run)
+│   ├── questions-synthetic.jsonl    # 25 questions over the synthetic corpus
+│   ├── run_evaluation.py            # Submits RAG eval jobs, polls, aggregates results
+│   ├── run_baseline.py              # No-retrieval baseline row (generator alone, same judge)
+│   └── results-2026-11-*.csv        # Raw results of the re-run in Section 8.4, Table 8.2
+├── retrieval/
+│   └── retrieve_for_tenant.py       # The Retrieve call from Section 8.7
 ├── monitoring/
 │   └── ingestion-alarms.yaml        # Log-delivery pipeline + alarms (the runbook-incident lesson)
 └── README.md                        # This file
@@ -42,10 +63,21 @@ Knowledge Bases itself. Each question has a precise reference response, so
 LLM-as-a-judge scoring is bounded by an objective comparison rather than
 free-form judgment.
 
-**An evaluation runner** that submits Bedrock Evaluations jobs against all
-five KBs in parallel, polls for completion, and aggregates the results into
-a comparison table. The generator is Sonnet 4.6; the judge is Nova Pro
-(cross-family, on the allowlist).
+**An evaluation runner** that submits native Bedrock RAG evaluation jobs
+against all five KBs, polls for completion, and aggregates the results into
+a comparison table, optionally with a retrieve-only job and repeated runs.
+The generator is Sonnet 4.6; the judge is Nova Pro (cross-family).
+
+**The November 2026 re-run (Section 8.4, Table 8.2).** `synthetic-corpus/` holds six
+documents of invented, verifiable facts (a fact table and a sha256 are included), so the
+generator cannot answer from memory: with no retrieval it scored 0.02 on Correctness
+(`run_baseline.py`). To reproduce: apply the Terraform, copy `synthetic-corpus/*.md` to
+`s3://<corpus bucket>/corpus/` (the data sources index only that prefix), ingest the five
+Knowledge Bases, then run `run_evaluation.py --questions questions-synthetic.jsonl
+--retrieval-metrics --repeats 2` and `run_baseline.py`. The run cost about $4.5 with
+Nova 2 Lite as generator and Nova Pro as judge; the retrieve-only job alone
+(`--no-generation`) costs about a fifth of a full repetition. Claude 5.x models cannot
+be the generator in these jobs (see the header of `run_evaluation.py`).
 
 **A log-delivery pipeline and CloudWatch alarms for ingestion failures.**
 This is the most important operational deliverable. The "runbook that
@@ -53,8 +85,10 @@ didn't exist" incident from Chapter 8 Section 8.1 happens when a team
 configures a Knowledge Base and trusts that the documents in S3 are also in
 the vector store. They are not, necessarily, and the console does not tell
 you. Knowledge Base ingestion has no native `AWS/Bedrock` CloudWatch
-metrics — the only observability Bedrock offers is JSON logs delivered
-through the CloudWatch Logs vended-log-delivery pipeline. This template
+metrics (the first edition of the book named two that do not exist) — the
+only observability Bedrock offers is JSON logs delivered through the
+CloudWatch Logs vended-log-delivery pipeline, plus the statistics in
+`GetIngestionJob`. This template
 wires that pipeline (`AWS::Logs::DeliverySource` / `DeliveryDestination` /
 `Delivery`), extracts the documented log fields into custom metrics via
 metric filters, and alarms on those. Three alarms catch the failure modes
@@ -77,6 +111,13 @@ shape:
 (Strategy labels match `local.strategies` in `main.tf` exactly — "fixed-size",
 not "fixed" — so they're greppable straight from the Terraform output.)
 
+Read these numbers with the limits Section 8.4 now states: the corpus was
+public AWS documentation the generator already knew (NONE scored 0.261
+while indexing one of three files), the run was 3 documents and 25
+questions once, semantic chunking ingested only one document, and the
+retrieval metrics were not run. NONE and SEMANTIC each indexed the HTML
+file only (1 of 3), not zero.
+
 Two groups, not a continuous ranking. The cliff between FIXED_SIZE (0.880)
 and NONE (0.261) is caused by ingestion failures, not by chunking quality.
 NONE and SEMANTIC simply cannot ingest typical technical documentation
@@ -84,8 +125,7 @@ because of the hard limits documented in the gotchas below.
 
 ## The eight infrastructure gotchas
 
-Before you run anything, internalize these. Three of them have killed
-deployments I've seen.
+Before running anything, read these.
 
 ### 1. Titan v2's 50,000-character / 8,192-token per-request limit
 
@@ -97,7 +137,7 @@ that size.
 
 **Fix:** NONE is only viable for pre-chunked corpora (FAQ entries, short
 tickets, individual product cards). For anything larger, choose FIXED_SIZE,
-HIERARCHICAL, or a Lambda-driven custom chunker (see gotcha #4 below).
+HIERARCHICAL, or a Lambda-driven custom chunker (see gotcha #8 below).
 
 ### 2. SEMANTIC chunking's empirical 1 MB per-file limit
 
@@ -128,7 +168,103 @@ not a top-level argument — the Terraform in this folder does this correctly.
 S3 Vectors indexes are also immutable: get this wrong and the fix is
 `destroy`/`apply`, not an in-place update.
 
-### 4. The Lambda custom chunker: three failure modes with near-identical errors
+### 4. The judge allowlist (resolved in 2026)
+
+**Was:** In April 2026, Sonnet 4.5/4.6 and Opus 4.x were rejected as judges
+("model(s) ... are not supported").
+
+**Now:** The Bedrock Evaluations judge list includes Claude Sonnet 4.5 and
+4.6 and Opus 4.5 through 4.8 (plus Haiku 4.5, Nova 2 Lite, and others);
+check the current list at
+https://docs.aws.amazon.com/bedrock/latest/userguide/evaluation-judge.html.
+Two notes still apply: the console offers inference profiles that the job
+later rejects, and a Legacy model unused for 30 days is denied even when
+listed.
+
+**Recommendation:** keep `amazon.nova-pro-v1:0` when the generator is
+Claude. A judge from another model family avoids self-preference bias.
+
+### 5. The IAM dual-policy requirement for Bedrock Evaluations
+
+**Symptom:** Eval job fails with "does not have permission to call the
+KB API" even though the role has the right action permissions.
+
+**Cause:** Like every service role, the evaluation role needs both a trust
+policy and a permission policy. The trap is that a fault on either side
+produces the same message, which names only the permission side. A third
+cause produces it too (live-tested 2026-11-11): a role whose `InvokeModel`
+covers a different generator than the one the job names. The job fails with
+"does not have permission to call the Knowledge Base API" although the
+Knowledge Base permissions are fine. Keep `generator_model_id` in `main.tf`
+equal to `GENERATOR_MODEL_ID` in `run_evaluation.py`.
+
+**Fix:** `main.tf` provisions `aws_iam_role.eval_role` with both sides
+configured — pass its ARN (`terraform output -raw eval_role_arn`) to
+`run_evaluation.py --eval-role-arn`:
+- Trust policy: allows `bedrock.amazonaws.com` to assume the role, scoped
+  to `aws:SourceArn` matching `evaluation-job/*`
+- Permission policy: `bedrock:Retrieve` on the specific KB ARNs (not a
+  wildcard — a wildcard here reproduced the same misleading error),
+  `bedrock:RetrieveAndGenerate` on `"*"` (it does not support
+  resource-level permissions), `bedrock:InvokeModel` on the generator's
+  inference profile, the foundation models behind it, and the judge, and S3
+  read/write on the corpus bucket. The first edition used
+  `bedrock-agent-runtime:*` action names, which IAM does not recognize.
+
+### 6. The metric partition between evaluation jobs
+
+**Symptom:** You configure an eval job with retrieval-only metrics
+(`ContextRelevance`, `ContextCoverage`) plus generation metrics
+(`Correctness`, `Faithfulness`) and the job fails or silently runs only
+some of them.
+
+**Cause:** Bedrock Evaluations partitions metrics into two categories that
+cannot be combined in one job. Retrieval-only metrics require a different
+job configuration from generation metrics.
+
+**Fix:** Run two separate eval jobs per KB. `run_evaluation.py
+--retrieval-metrics` submits the retrieve-only job alongside the
+generation job. The April 2026 numbers come from the generation job only.
+
+### 7. Ingestion failures don't show prominently in the console — and there is no `AWS/Bedrock` metric to alarm on either
+
+**Symptom:** A document exists in S3, the KB shows the data source as
+"synced", but queries return "no information available" for content you
+know is in that document. Looking for a native CloudWatch metric to alarm
+on turns up nothing — Knowledge Base ingestion does not publish one.
+
+**Cause:** The Bedrock console's data-source view does not flag
+per-document failures. The overall sync status can be COMPLETE while
+individual documents failed to process (oversized for SEMANTIC, encoding
+issues, etc.). The only observability Bedrock exposes for ingestion is JSON
+log events delivered through the CloudWatch Logs vended-log-delivery
+pipeline — not metrics. Two event types carry everything, in two
+documented schemas. Classic (self-configured) KBs
+([knowledge-bases-logging.html](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-bases-logging.html)):
+`StartIngestionJob.StatusChanged` with `event.ingestion_job_status` and
+`event.resource_statistics.number_of_resources_failed`, and
+`StartIngestionJob.ResourceStatusChanged` with `event.status` (`FAILED`,
+`EMBEDDING_FAILED`, `INDEXING_FAILED`, `PARTIALLY_INDEXED`,
+`RESOURCE_IGNORED`, ...) and `event.status_reasons`. Managed KBs
+([kb-managed-observability.html](https://docs.aws.amazon.com/bedrock/latest/userguide/kb-managed-observability.html)):
+a job-level `event.message` such as `Crawling completed`, and per document
+`event.connector_document_status.Status` plus `event.error_message`.
+
+**Fix:** Deploy `monitoring/ingestion-alarms.yaml`. It provisions the
+delivery pipeline itself (`AWS::Logs::DeliverySource` /
+`DeliveryDestination` / `Delivery`, plus the resource policy that same-account
+delivery to CloudWatch Logs requires), three `AWS::Logs::MetricFilter`
+resources that turn the documented log fields of either schema into custom
+metrics, and three alarms against those derived metrics: ERROR-level events
+or a classic job ending `FAILED`; per-document failures or ignored documents;
+and silent rot when no job has completed in 7 days. Deploy this stack for
+every KB in production. Getting a field name
+wrong here fails silently: the filter never matches, the metric is never
+published, and the alarm sits in INSUFFICIENT_DATA forever (or, with
+`TreatMissingData: breaching`, alarms permanently). Neither `cfn-lint` nor
+`validate-template` can catch that.
+
+### 8. The Lambda custom chunker: three failure modes with near-identical errors
 
 **Symptom:** The `custom` strategy's ingestion job fails with
 `Access denied for lambda:InvokeFunction`, or the Lambda is invoked but
@@ -152,90 +288,6 @@ qualified-ARN resource list on the KB role policy) and
 `lambda/custom_chunker.py` (reads `event["bucketName"]` + relative keys).
 See https://docs.aws.amazon.com/bedrock/latest/userguide/kb-custom-transformation.html
 for the full event/response contract.
-
-### 5. Sonnet 4.6, 4.5, and Opus 4.x are NOT on the Bedrock Evaluations judge allowlist
-
-**Symptom:** Eval job creation fails with "model not supported" when you
-specify Sonnet 4.x as the judge.
-
-**Cause:** Bedrock Evaluations maintains a fixed allowlist that has not
-been updated with the newest Claude models. The allowed judges are Sonnet
-3.5/3.7, Haiku 3/3.5, Nova Pro, Llama 3.1 70B, and Mistral Large.
-
-**Fix:** Use `amazon.nova-pro-v1:0` as the judge. Cross-family judging
-also reduces intra-family self-evaluation bias, so this is a feature, not
-a workaround.
-
-### 6. The IAM dual-policy requirement for Bedrock Evaluations
-
-**Symptom:** Eval job fails with "does not have permission to call the
-KB API" even though the role has the right action permissions.
-
-**Cause:** Bedrock Evaluations needs BOTH a trust policy AND a permission
-policy. A trust policy alone (or vice versa) produces the misleading
-"permission" error that sends teams debugging the wrong direction.
-
-**Fix:** `main.tf` provisions `aws_iam_role.eval_role` with both sides
-configured — pass its ARN (`terraform output -raw eval_role_arn`) to
-`run_evaluation.py --eval-role-arn`:
-- Trust policy: allows `bedrock.amazonaws.com` to assume the role, scoped
-  to `aws:SourceArn` matching `evaluation-job/*`
-- Permission policy: the specific KB ARNs (not a wildcard — a wildcard
-  here reproduces the same misleading error), `bedrock:InvokeModel` on the
-  generator and judge models, and S3 read/write on the corpus bucket
-
-### 7. The metric partition between evaluation jobs
-
-**Symptom:** You configure an eval job with retrieval-only metrics
-(`ContextRelevance`, `ContextCoverage`) plus generation metrics
-(`Correctness`, `Faithfulness`) and the job fails or silently runs only
-some of them.
-
-**Cause:** Bedrock Evaluations partitions metrics into two categories that
-cannot be combined in one job. Retrieval-only metrics require a different
-job configuration from generation metrics.
-
-**Fix:** Run two separate eval jobs per KB if you want both metric
-categories. This benchmark runs only generation metrics (Correctness,
-Completeness, Helpfulness, Faithfulness) for that reason.
-
-### 8. Ingestion failures don't show prominently in the console — and there is no `AWS/Bedrock` metric to alarm on either
-
-**Symptom:** A document exists in S3, the KB shows the data source as
-"synced", but queries return "no information available" for content you
-know is in that document. Looking for a native CloudWatch metric to alarm
-on turns up nothing — Knowledge Base ingestion does not publish one.
-
-**Cause:** The Bedrock console's data-source view does not flag
-per-document failures. The overall sync status can be COMPLETE while
-individual documents failed to process (oversized for SEMANTIC, encoding
-issues, etc.). The only observability Bedrock exposes for ingestion is JSON
-log events delivered through the CloudWatch Logs vended-log-delivery
-pipeline — not metrics. Two event types carry everything:
-`StartIngestionJob.StatusChanged` (job level, with a human-readable
-`event.message` such as `Crawling completed`) and
-`StartIngestionJob.ResourceStatusChanged` (per document, with
-`event.connector_document_status.Status`, the per-stage
-`crawl_status`/`sync_status`/`index_status`, `event.chunk_statistics`, and an
-`event.error_message` that is present only on failure).
-
-**Fix:** Deploy `monitoring/ingestion-alarms.yaml`. It provisions the
-delivery pipeline itself (`AWS::Logs::DeliverySource` /
-`DeliveryDestination` / `Delivery`, plus the resource policy that same-account
-delivery to CloudWatch Logs requires), three `AWS::Logs::MetricFilter`
-resources that turn the documented log fields into custom metrics, and
-three alarms against those derived metrics: ERROR-level ingestion events
-(there is no job-level "job failed" event to match on — job logs carry only a
-message, so `level` is the honest signal), per-document failures via
-`event.connector_document_status.Status = "FAILED"` (the field AWS's own
-documented Logs Insights query uses for this), and silent rot when no job has
-completed in 7 days. Deploy this stack for every KB in production — see
-https://docs.aws.amazon.com/bedrock/latest/userguide/kb-managed-observability.html
-for the full log schema, including the exact field names. Getting a field name
-wrong here fails silently: the filter never matches, the metric is never
-published, and the alarm sits in INSUFFICIENT_DATA forever (or, with
-`TreatMissingData: breaching`, alarms permanently). Neither `cfn-lint` nor
-`validate-template` can catch that.
 
 ## How to run the benchmark
 
@@ -282,14 +334,22 @@ python run_evaluation.py \
   --terraform-output terraform/output.json \
   --questions questions.jsonl \
   --eval-role-arn "$(cd terraform && terraform output -raw eval_role_arn)" \
+  --retrieval-metrics --repeats 3 \
   --output-csv benchmark-results.csv
 ```
 
+For a run that answers the book's own criticism of the April benchmark
+(Section 8.4): use a corpus the generator cannot
+know (internal or synthetic documents), pre-split files below 1,000,000
+characters so SEMANTIC ingests everything, and add a no-retrieval baseline
+by asking the same questions to the generator with no Knowledge Base.
+
 The eval role (`aws_iam_role.eval_role` in `main.tf`) is provisioned by
-the same `terraform apply` from Step 1 — see gotcha #6 above for why both
+the same `terraform apply` from Step 1 — see gotcha #5 above for why both
 its trust policy and its permission policy matter.
 
-Expect this to take 45-90 minutes and cost approximately $18 USD.
+The single generation pass in April took 45-90 minutes and cost about
+$18-20. Retrieval jobs and repeats multiply both.
 
 ### Step 5 — Read the results
 
@@ -303,7 +363,7 @@ expected shape, the benchmark replicated successfully.
 Even if you don't run the full benchmark, **deploy the monitoring stack for
 every KB in production**. `monitoring/ingestion-alarms.yaml` provisions the
 CloudWatch Logs vended-log-delivery pipeline for that KB (there is no native
-metric to alarm on — see gotcha #8) plus the three alarms. Stack it per-KB:
+metric to alarm on — see gotcha #7) plus the three alarms. Stack it per-KB:
 
 ```bash
 aws cloudformation deploy \
@@ -324,7 +384,7 @@ in addition to normal CloudFormation permissions — these are one-time
 delivery-pipeline setup calls the stack's own resources can't grant
 themselves.
 
-Skipping this is Chapter 8 anti-pattern #3 and the cause of incidents
+Skipping this is book gotcha seven (Section 8.6) and the cause of incidents
 like the one in Section 8.1.
 
 ## Reference

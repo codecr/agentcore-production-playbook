@@ -1,0 +1,41 @@
+// Policy: 13_rate_limit_destructive_actions   (Dogwood temporal policy)
+// Category: Defense in depth
+// Intent: Refuse a sixth terminate_instance call within one hour of the
+//         same policy session. The count includes the current request.
+//         One temporal policy per action keeps the syntax to the form the
+//         author tested; copy it for delete_resource (quota: 20 temporal
+//         policies per engine, 3 temporal operators per policy).
+//
+// Trusted input: the session's own event history, recorded by AgentCore
+//   Policy. Nothing upstream has to compute a counter.
+// Requirements:
+//   - every request carries x-amzn-bedrock-agentcore-policy-session-id, and
+//     YOUR BACKEND chooses that ID (e.g. HMAC(user, conversation)). If the
+//     agent picks it, a new ID resets the count. In the author's 2026-10-12
+//     lab, rotating the ID defeated a per-session limit in 20 of 20 trials.
+//   - the Gateway role needs bedrock-agentcore:GetWorkloadAccessToken.
+//   - a permit for these actions must exist (policy 02); create it before
+//     this forbid or strict validation may report "Overly Restrictive".
+// Counting ::request means denied attempts count too (40 of 40 trials in the
+//   same lab). For a destructive limit I want that: an agent hammering a
+//   denied delete should lock itself out. Count ::response instead if only
+//   completed calls should count (untested by the author).
+// 2nd edition change: the 1st edition read
+//   context.input.destructive_count_last_hour from an "upstream authorizer".
+//   No authorizer in front of the user API can write into tool arguments.
+// Local testing: cedarpy cannot parse Dogwood. CI submits this file with
+//   definition={"policy": {...}} and validates it on AWS only.
+
+forbid (
+  principal,
+  action == AgentCore::Action::"devops-prod___terminate_instance",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID"
+)
+when temporal {
+  exists (n: Long).
+    (count for (t: Timepoint).
+      where (formerly within 1h (
+        AgentCore::Action::"devops-prod___terminate_instance"::request{ eventResource: resource }
+        && tp(t)))) == n
+    && n > 5
+};

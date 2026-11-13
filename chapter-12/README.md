@@ -1,106 +1,64 @@
-# Chapter 12: The Operations Playbook
+# Chapter 12: Multi-Agent Systems and A2A in Production
 
-This folder accompanies Chapter 12 of *AgentCore in Production: The Operator's Playbook* — the final chapter.
+This folder accompanies Chapter 12 of *AgentCore in Production: The Operator's Playbook*, 2nd edition (new in this edition). In the first edition, Chapter 12 was the operations playbook; it is now Chapter 13 and lives in `chapter-13/`.
+
+State of AWS described here: October 2026. A2A servers on AgentCore Runtime (since GA, October 2025), Gateway HTTP passthrough targets with `protocolType: A2A` (July 2026), AgentCore Identity on-behalf-of token exchange (April 2026), temporal policies in Dogwood (August 6, 2026), per-agent span log groups (agents created from July 20, 2026), AWS Agent Registry GA under the `agent-registry` namespace (August 31, 2026).
 
 ## What's here
 
 ```
 chapter-12/
-├── checklist/
-│   └── production-launch-checklist.md   # Phase 0 through Phase 4, plus the money section
-├── payments/
-│   ├── budget_guard.py                  # Aggregate spend control across sessions
-│   └── payment-policies.cedar           # 7 Cedar policies for payment-capable tools
-├── runbook/
-│   └── agent-incident-runbook.md        # Incident template, by symptom
+├── identity/
+│   └── hop_authority.py               # authority from verified claims, payload claims logged as data
+├── policies/
+│   ├── credit_requires_user_principal.cedar   # 12.6: no user in the token, no credit
+│   ├── approval_before_credit.dogwood              # 12.6: approval as a recorded action (Dogwood)
+│   ├── a2a_fanout_limit.dogwood                    # 12.8: per-session delegation limit (Dogwood count)
+│   ├── kill_switch_forbid_delegation.cedar    # 12.10: stateless kill switch
+│   └── tests/test_credit_policy.py            # cedarpy tests for the Cedar policy
+├── observability/
+│   ├── multi_log_group_query.py       # 12.7: builds the span log-group list from deployed runtimes
+│   └── multi_log_group_query.sh       # 12.7: the snippet from the chapter
+├── amplification/
+│   └── hop_budget.py                  # 12.8: hop limit, deadline, call budget, single-layer retry
+├── containment/
+│   └── kill_switch.py                 # 12.10: dry-run containment plan, narrowest switch first
+├── evaluation/
+│   ├── delegation_golden_cases.jsonl  # 12.9: summary-fidelity and asserted-authority cases
+│   └── check_summary_fidelity.py      # 12.9: the code-based assertion on outgoing A2A payloads
 └── README.md
 ```
 
-## What this delivers
-
-**The launch checklist**, organized by phase rather than by service, because
-the order matters more than the list. Items marked **[hard to reverse]** are
-the ones that cost days now and quarters later: the identity model, the tenant
-isolation model, the Gateway as sole ingress, the model as configuration, and
-instrumentation from the first turn. The final section applies only if the
-agent handles money, and exists because the session-scoped spending limit is
-necessary and not sufficient.
-
-**Aggregate budget enforcement.** AgentCore Payments enforces spending limits
-per session at the infrastructure layer. A workload that opens two thousand
-sessions a month has two thousand budgets that sum to a number nobody chose.
-`budget_guard.py` adds the tiers AgentCore does not: daily and monthly caps
-with atomic, conditional DynamoDB writes (the `record()` write is tied to the
-same cap `authorize()` checked, so a concurrent write that would blow the
-cap loses the race with `ConditionalCheckFailedException` rather than
-overspending silently), a single-transaction ceiling, a payee allowlist, a
-human-approval threshold, a circuit breaker that flags a single transaction
-far above an agent's trailing spend pattern, and a check for whether the
-tenant has already purchased the durable resource the agent is about to buy
-again.
-
-It validates policies for internal consistency, and rejects unsound ones:
+## Run locally (no AWS access)
 
 ```bash
-python payments/budget_guard.py
-#   single tx cap : $2.00
-#   daily cap     : $40.00   (20 max transactions/day)
-#   monthly cap   : $900.00  (binds at day 23 of sustained max spend)
-#
-# An unsound policy for comparison:
-#   - single_tx_cap should be at most a tenth of daily_cap...
-#   - monthly_cap can never be reached given daily_cap — it is decoration
-#   - allowed_payees is empty...
+python identity/hop_authority.py
+python amplification/hop_budget.py
+python evaluation/check_summary_fidelity.py
+python observability/multi_log_group_query.py --dry-run
+python containment/kill_switch.py --callee refunds-agent \
+  --reason "INC-2291 unapproved credits issued" --pulled-by oncall-platform
 ```
 
-**Cedar policies for payment tools.** Seven policies covering explicit payment
-authorization, production-only spending, per-call ceilings by agent class, a
-payee allowlist enforced at the Gateway, mandatory human approval for anything
-with a duration, an out-of-hours restriction for larger amounts, and mandatory
-tenant attribution on every payment. Deploy them the way Chapter 3 recommends:
-`LOG_ONLY`, read the decisions, then `ENFORCE`.
+These five demos were run locally (Python 3.12) while drafting the chapter. They print what the chapter describes: the `approved_by` claim logged as a mismatch, 27 leaf attempts under independent retries versus three under single-layer retry, the opener's A2A payload failing the fidelity check, the per-agent log groups plus `aws/spans`, and a containment plan that applies nothing.
 
-**An incident runbook** organized by symptom rather than by component, because
-agent incidents arrive as customer complaints and finance questions rather
-than as alarms. Includes a containment table ordered by speed with
-reversibility marked, and a postmortem requirement that every incident
-produces at least one golden-set case.
+## Verification status
 
-## The three-layer spend control
+Live-tested on 2026-11-10/11 against a lab account: the A2A action identifier and the JSON-RPC method in `context.input` (`<target>___POST:/`, `context.input.method`), `credit_requires_user_principal.cedar` (both statements reach ACTIVE under `FAIL_ON_ANY_FINDINGS`, permit first), `kill_switch_forbid_delegation.cedar`, `a2a_fanout_limit.dogwood` (the sixth call in a policy session is denied), stale-session behavior on A2A passthrough (HTTP 409), and the per-agent log group. The six tests in `policies/tests/` pass locally.
 
-The chapter's argument in one table. None of the three substitutes for the
-others:
+Not verified:
 
-| Layer | Question | Where enforced |
-|---|---|---|
-| Cedar policies | May this principal spend at all, on what, in which environment? | Gateway, before the call |
-| AgentCore Payments limits | How much may be spent in **this session**? | Payment infrastructure |
-| BudgetGuard | How much may be spent **today and this month**? | Your code, atomic counters |
+- **Claims on the on-behalf-of token.** `user_role`, `tenant`, and the RFC 8693 `act` claim depend on how your IdP performs the exchange. Inspect a real exchanged token first.
+- **`approval_before_credit.dogwood`** ran on 2026-11-12 (with an IAM principal in the lab): it denies a credit before the approval, allows it after an approval for the same invoice in the same policy session, and denies it for another invoice or in another policy session. An approval made in a different session (an account manager approving in their own conversation) is invisible to it; Section 12.6 moves that case to durable state read by the credit tool.
+- **`kill_switch.py --apply`** and **`multi_log_group_query.py`** without `--dry-run` make real control-plane and Logs calls and were not run.
+- **Rate limits at the Gateway.** The limits were created and reached ACTIVE, but a burst test did not show throttling.
 
-The incident that opens Chapter 12 passed the second, was never subjected to
-the first, and had no third.
+## Requirements
 
-## Payments preview status
-
-AgentCore Payments entered preview on **May 7, 2026**, built with Coinbase and
-Stripe. As of this writing:
-
-- Wallets: **Coinbase CDP** or **Stripe Privy**, connected as a payment
-  connection; the end user must explicitly authorize the agent
-- Protocol: **x402** over HTTP 402, with additional protocols on the roadmap
-- Settlement: stablecoin (USDC on Base and Solana)
-- **The agent never holds private keys**
-- Spending limits are **per session** and time-bound
-- The Coinbase x402 Bazaar MCP server is available through AgentCore Gateway,
-  exposing on the order of ten thousand paid endpoints
-- Region-limited, and the Stripe leg was US-only at launch
-
-Treat it as the fastest way to build a working prototype on Bedrock, and read
-Chapter 12 Section 12.6 before treating it as the production answer for a
-regulated workload.
+- Python 3.10+
+- `boto3` only for the non-dry-run paths (current release; the `agent-registry` client requires an SDK released after August 2026)
+- `cedarpy` and `pytest` for `policies/tests/`
 
 ## License
 
-Code, policies, and templates in this folder are MIT licensed. The
-accompanying book chapter is copyrighted; the material is explicitly intended
-for reuse — copy the checklist into your repository and edit it.
+MIT for code and policies, as for the rest of the companion repository.

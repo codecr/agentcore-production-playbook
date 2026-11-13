@@ -1,0 +1,16 @@
+# CloudWatch Logs Insights query: Policy denials and LOG_ONLY decision flips.
+# Chapter 3, Section 3.9 (2nd edition).
+#
+# Log group: aws/spans (requires tracing enabled on the AgentCore Gateway).
+# Attribute names are from "AgentCore generated policy observability data"
+# in the AgentCore Developer Guide (checked 2026-10-26). The backtick-quoted
+# field paths assume the span JSON nests these keys under "attributes";
+# UNTESTED by the author against live spans. See console-tests/ch03.md CT-03-09.
+
+fields @timestamp,
+  `attributes.aws.agentcore.policy.authorization_decision` as decision,
+  `attributes.aws.agentcore.policy.determining_policies` as determining,
+  `attributes.aws.agentcore.policy.log_only_decision_flipping_policies` as would_flip
+| filter decision = "DENY" or ispresent(would_flip)
+| stats count(*) as hits by determining, would_flip
+| sort hits desc

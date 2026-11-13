@@ -1,0 +1,10 @@
+// Policy: 16a_permit_run_tests   (companion plain permit for policy 16)
+// Without this permit, run_tests is denied, recorded as an ::error event,
+// and policy 16's ::response condition can never match.
+// Submit with validationMode=IGNORE_ALL_FINDINGS (see policy 16 header).
+
+permit (
+  principal,
+  action == AgentCore::Action::"ci___run_tests",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID"
+);

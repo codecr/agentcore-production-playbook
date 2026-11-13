@@ -18,9 +18,20 @@ chapter-06/
 └── README.md                    # This file
 ```
 
-## Preview status
+## Status (October 2026, 2nd edition)
 
-Session Storage is in **public preview** (since March 25, 2026). Pricing, limits, and behaviors may change before GA. Read Chapter 6 Section 6.2 and the preview-status items in `checklist.md` before adopting in business-critical workloads.
+Session Storage is still in **public preview** (since March 25, 2026), and usage is not charged during the preview. Its limits are unchanged: 1 GB per session, ~50 MB of filesystem metadata (roughly 100,000-200,000 files), 200 directory levels, 255-byte filenames, a reset after 14 idle days, and a reset on every runtime version update. Read Chapter 6 Section 6.2 and the preview items in `checklist.md` before adopting it for business-critical workloads.
+
+What changed around it since the first edition:
+
+- **Bring-your-own file systems (May 6, 2026).** Amazon S3 Files and Amazon EFS access points can be mounted into every session (VPC required), up to five file system configurations per runtime, alongside Session Storage. Use them when sessions or agents must share files.
+- **Interactive shells (June 5, 2026).** `InvokeAgentRuntimeCommandShell` adds PTY shells over WebSocket: up to 10 per runtime, 1-hour connections, 256 KB reconnect buffer.
+- **Quotas (August 2026).** All Runtime data-plane APIs share 1,000 TPS per account (adjustable); new session creation is 25 TPS per account. The first edition's "25 TPS per agent" for commands is obsolete.
+- **Runtime Instances (August 6, 2026).** EC2-backed runtimes with sessions up to 14 days. Session Storage is *not* supported there (capacity provider EBS volumes are); `deploy_runtime.py` manages microVM runtimes only.
+- **Runtime V2 (September 18, 2026).** Snapshot-based cold starts and new pricing, in five Regions. `deploy_runtime.py --platform-version V2` passes the field through, but needs an SDK whose service model includes it (boto3 1.43.10 does not).
+- **Cedar does not gate shell commands.** Commands are a Runtime API and never pass through the Gateway. Control them with IAM (`bedrock-agentcore:InvokeAgentRuntimeCommand`, `bedrock-agentcore:InvokeAgentRuntimeCommandShell`) and, for agent-initiated operations, by exposing fixed-template commands as Gateway tools that Cedar can evaluate.
+
+`deploy_runtime.py --update` was run against a live runtime on 2026-11-11 (see its header for what that found); the rest of this folder was checked offline only (`repo/_verify/ch6_check.py`).
 
 ## What this delivers
 
@@ -47,6 +58,8 @@ docker tag runbook-agent:latest \
 docker push 111122223333.dkr.ecr.us-west-2.amazonaws.com/runbook-agent:latest
 ```
 
+> Runtime names may contain only letters, digits, and underscores (`[a-zA-Z][a-zA-Z0-9_]{0,47}`). The first edition used `acme-runbook-agent`, which the API rejects.
+
 > **Important:** The runtime requires ARM64. An x86 image will be rejected with `Architecture incompatible`. The `buildx --platform linux/arm64` flag is mandatory on x86 build machines.
 
 ### 2. Create the runtime with Session Storage
@@ -56,7 +69,7 @@ export AWS_REGION=us-west-2
 export EXECUTION_ROLE_ARN=arn:aws:iam::111122223333:role/AgentExecutionRole
 export CONTAINER_URI=111122223333.dkr.ecr.us-west-2.amazonaws.com/runbook-agent:latest
 
-python scripts/deploy_runtime.py --create --name acme-runbook-agent
+python scripts/deploy_runtime.py --create --name acme_runbook_agent
 ```
 
 AWS appends a random suffix to the name. Get the actual ARN with:
@@ -84,11 +97,11 @@ client = boto3.client(
 )
 
 response = client.invoke_agent_runtime(
-    agentRuntimeArn="arn:aws:bedrock-agentcore:us-west-2:111122223333:runtime/acme-runbook-agent-XXXXXXXXXX",
+    agentRuntimeArn="arn:aws:bedrock-agentcore:us-west-2:111122223333:runtime/acme_runbook_agent-example",
     runtimeSessionId=session_id,
     payload=json.dumps({
-        "prompt": "Analyze the support tickets from the last 30 days and "
-                  "draft runbooks for the top 5 recurring issues."
+        "prompt": "Analyze the next chunk of support tickets from the "
+                  "quarterly batch and update the runbooks."
     }).encode(),
 )
 result = json.loads(b"".join(response["response"]))
@@ -101,7 +114,7 @@ print(result["response"])
 from utils.session_lifecycle import safe_stop_session
 
 result = safe_stop_session(
-    runtime_arn="arn:aws:bedrock-agentcore:...",
+    runtime_arn="arn:aws:bedrock-agentcore:us-west-2:111122223333:runtime/acme_runbook_agent-example",
     session_id=session_id,
     region="us-west-2",
 )
@@ -121,7 +134,7 @@ Invoking with the **same** `session_id` resumes the session. The agent sees its 
 
 ```bash
 python utils/session_lifecycle.py find-orphans \
-    --runtime-arn arn:aws:bedrock-agentcore:... \
+    --runtime-arn arn:aws:bedrock-agentcore:us-west-2:111122223333:runtime/acme_runbook_agent-example \
     --threshold-hours 24
 ```
 
@@ -157,7 +170,9 @@ To use this pattern with a different use case:
 
 - **Backup and disaster recovery.** Session Storage is for working state, not durable archival. Important artifacts (committed runbooks, finished analyses) should be exported to S3 or pushed to a remote Git repository before the session is stopped.
 
-- **The Acme SaaS Cedar policies that gate the agent's tool calls.** Those are in `chapter-03/policies/` and apply orthogonally to anything in this folder.
+- **The Acme SaaS Cedar policies that gate the agent's tool calls.** Those are in `chapter-03/policies/`. They apply to tool calls through the Gateway, not to `InvokeAgentRuntimeCommand` or interactive shells.
+
+- **Runtime Instances and Lambda MicroVMs.** Chapter 6 Section 6.8 compares them with the microVM runtime. Neither is deployed by this folder.
 
 ## License
 

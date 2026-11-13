@@ -4,12 +4,15 @@
 # This runs on every PR that touches the policies/ folder.
 #
 # Pipeline:
-#   1. Cedar syntax validation (local, no AWS)
-#   2. pytest suite (local, no AWS)
-#   3. AWS automated reasoning validation (calls create_policy in dry-run)
-#   4. Decision diff against historical request corpus
+#   1. Cedar syntax validation (local, no AWS). Dogwood files in
+#      policies/temporal/ are skipped here: cedarpy cannot parse them.
+#   2. pytest suite (local, no AWS): policies, trusted-input regressions,
+#      and the REQUEST interceptor that writes trusted fields
+#   3. AWS validation via create_policy (FAIL_ON_ANY_FINDINGS), Cedar and
+#      Dogwood; the script polls for ACTIVE / CREATE_FAILED. Dry-run by default.
+#   4. Decision diff against historical request corpus (Cedar only)
 #
-# See Chapter 3 Section 3.7 of the AgentCore Playbook for the full explanation.
+# See Chapter 3 Section 3.9 of the AgentCore Playbook (2nd edition).
 
 name: Policy validation
 
@@ -18,6 +21,7 @@ on:
     paths:
       - 'chapter-03/policies/**'
       - 'chapter-03/tests/**'
+      - 'chapter-03/interceptor/**'
 
 jobs:
   validate:
@@ -41,7 +45,7 @@ jobs:
           # was replaced by PolicySet.from_str, and Decision became a plain
           # Enum). Pin to the version this workflow is written against so a
           # future upstream release doesn't silently break the steps below.
-          pip install "cedarpy==4.8.7" pytest boto3
+          pip install "cedarpy==4.8.7" pytest "boto3>=1.43.100"
           # AgentCore CLI for the AWS-side validation
           npm install -g @aws/agentcore
 
@@ -101,20 +105,39 @@ jobs:
           role-to-assume: ${{ secrets.AWS_POLICY_CI_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Validate against AWS automated reasoning
+      - name: Validate against AWS policy validation (Cedar analyzer)
         env:
           STAGING_POLICY_ENGINE_ID: ${{ secrets.STAGING_POLICY_ENGINE_ID }}
           STAGING_GATEWAY_ARN: ${{ secrets.STAGING_GATEWAY_ARN }}
         run: |
+          # Remove --dry-run once a staging Policy Engine exists. The script
+          # then polls GetPolicy and exits 1 on CREATE_FAILED.
           for policy in chapter-03/policies/*.cedar; do
             policy_name=$(basename "$policy" .cedar)
-            echo "Submitting $policy_name to AWS for automated reasoning validation"
+            echo "Submitting $policy_name for validation"
             python chapter-03/ci/submit_for_validation.py \
               --policy-file "$policy" \
               --policy-name "$policy_name" \
               --engine-id "$STAGING_POLICY_ENGINE_ID" \
               --gateway-arn "$STAGING_GATEWAY_ARN" \
               --validation-mode FAIL_ON_ANY_FINDINGS \
+              --dry-run
+          done
+          # Dogwood (temporal) policies. Plain permits that exist only so a
+          # prior action is recorded as ::response (16a) are rejected as
+          # "Overly Permissive" under strict validation, so they go in with
+          # IGNORE_ALL_FINDINGS. Sorted order creates 16a after 16; on a real
+          # engine, create permits before forbids (see policy 13's header).
+          for policy in chapter-03/policies/temporal/*.dogwood; do
+            policy_name=$(basename "$policy" .dogwood)
+            mode=FAIL_ON_ANY_FINDINGS
+            case "$policy_name" in *a_permit_*) mode=IGNORE_ALL_FINDINGS ;; esac
+            python chapter-03/ci/submit_for_validation.py \
+              --policy-file "$policy" \
+              --policy-name "$policy_name" \
+              --engine-id "$STAGING_POLICY_ENGINE_ID" \
+              --gateway-arn "$STAGING_GATEWAY_ARN" \
+              --validation-mode "$mode" \
               --dry-run
           done
 

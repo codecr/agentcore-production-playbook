@@ -1,0 +1,32 @@
+// =============================================================================
+// daily-purchase.dogwood - per-policy-session cap on payments___purchase_access
+// =============================================================================
+// Accompanies Chapter 13 (Section 13.12). daily-spend.dogwood counts only
+// payments___pay_endpoint, and the incident's $4 pass was bought through
+// payments___purchase_access. Dogwood cannot add two sums in one condition
+// (tested 2026-11-12), so each payment tool gets its own cap; the combined
+// ceiling across tools lives in budget_guard.py. $10.00 lets two $4 passes
+// through in a day and denies the third.
+// Live-tested 2026-11-12 with a 300-cent cap: 250 passed, a further 100 was denied.
+// Same caveats as daily-spend.dogwood: the policy session id must be chosen by
+// your backend, denied requests count, and temporal-policy deploys reset sessions.
+// The purchase_access input schema must declare amount_cents as an integer (Long).
+// =============================================================================
+
+forbid (
+  principal is AgentCore::OAuthUser,
+  action == AgentCore::Action::"payments___purchase_access",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/acme-lending"
+)
+when temporal {
+  exists (total: Long). (
+    (sum c for (c: Long), (t: Timepoint). where (
+      formerly within 24h (
+        AgentCore::Action::"payments___purchase_access"::request{
+          input.amount_cents: c, eventResource: resource
+        }
+        && tp(t)
+      )
+    )) == total && total > 1000
+  )
+};

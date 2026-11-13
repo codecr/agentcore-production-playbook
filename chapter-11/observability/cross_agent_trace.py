@@ -88,9 +88,10 @@ class RequestContext:
     def as_payload_header(self) -> dict[str, str]:
         """Serialize for transport in an invocation payload.
 
-        Agent-to-agent calls do not reliably carry OpenTelemetry context.
-        Putting the correlation fields in the payload is unglamorous and
-        works across every transport: HTTP, SQS, EventBridge, direct invoke.
+        A synchronous InvokeAgentRuntime call can carry W3C trace context
+        (traceParent / traceState / baggage). Queues, events, scheduled jobs,
+        and MCP servers you do not operate usually do not. The payload
+        fields survive all of them: HTTP, SQS, EventBridge, direct invoke.
         """
         return {
             "x-acme-correlation-id": self.correlation_id,
@@ -130,43 +131,81 @@ def instrument_span(span, context: RequestContext, agent_name: str) -> None:
 # Reconstruction — the 03:00 query
 # =========================================================================
 
+# Span destinations, as of October 2026:
+#   * agents created from July 20, 2026 (or opted in with
+#     UNIFIED_TRACES_DESTINATION_ENABLED=true and a recent ADOT) write spans,
+#     prompts and logs to a per-agent group:
+#         /aws/bedrock-agentcore/runtimes/<agent_id>-<endpoint_name>
+#   * older agents still write spans to the shared group `aws/spans`.
+# A fleet that straddles the change needs both in the query, or half the
+# timeline disappears without an error.
+LEGACY_SPANS_LOG_GROUP = "aws/spans"
+RUNTIME_LOG_GROUP_PREFIX = "/aws/bedrock-agentcore/runtimes/"
+MAX_LOG_GROUPS_PER_QUERY = 50   # Logs Insights StartQuery limit for logGroupNames
+
+# Span attributes land under `attributes.` in the span records. Live per-agent log group
+# (2026-11-11): the records are OpenTelemetry log events with `traceId`, `spanId`, and
+# `attributes`; check one query in your account before relying on the paths.
+SPAN_ATTRIBUTE_PREFIX = "attributes."
+
+
+def span_log_groups(region: str = AWS_REGION, include_legacy: bool = True) -> list[str]:
+    """Every log group that may hold spans for this account and Region."""
+    client = boto3.client("bedrock-agentcore-control", region_name=region)
+    groups = [LEGACY_SPANS_LOG_GROUP] if include_legacy else []
+    for page in client.get_paginator("list_agent_runtimes").paginate():
+        for runtime in page.get("agentRuntimes", []):
+            runtime_id = runtime.get("agentRuntimeId")
+            endpoints = client.list_agent_runtime_endpoints(agentRuntimeId=runtime_id)
+            for endpoint in endpoints.get("runtimeEndpoints", []):
+                groups.append(f"{RUNTIME_LOG_GROUP_PREFIX}{runtime_id}-{endpoint.get('name')}")
+    if len(groups) > MAX_LOG_GROUPS_PER_QUERY:
+        logger.warning("%d span log groups; querying the first %d. Split the query "
+                       "or use a SOURCE logGroups(namePrefix: [...]) clause.",
+                       len(groups), MAX_LOG_GROUPS_PER_QUERY)
+    return groups[:MAX_LOG_GROUPS_PER_QUERY]
+
+
+def build_query(correlation_id: str) -> str:
+    a = SPAN_ATTRIBUTE_PREFIX
+    return f"""
+        fields @timestamp, @log, `{a}{AGENT_ATTRIBUTE}` as agent, `{a}acme.hop` as hop,
+               name, `{a}gen_ai.operation.name` as operation,
+               `{a}gen_ai.tool.name` as tool, status.code as status, durationNano
+        | filter `{a}{CORRELATION_ATTRIBUTE}` = "{correlation_id}"
+        | sort @timestamp asc
+        | limit 500
+    """
+
+
 def reconstruct_request(
     correlation_id: str,
-    log_group: str = "/aws/bedrock-agentcore/traces",
+    log_groups: Optional[list[str]] = None,
     hours_back: int = 24,
     region: str = AWS_REGION,
 ) -> list[dict[str, Any]]:
     """Pull every span across every agent for one customer request.
 
-    Uses CloudWatch Logs Insights against the trace log group. If your traces
-    land in a different destination, the query shape is the same: filter on
-    the correlation attribute, sort by timestamp, project the fields that
-    tell the story.
+    Queries several log groups at once (up to 50). Pass `log_groups`
+    explicitly, or let span_log_groups() derive them from deployed runtimes.
     """
     client = boto3.client("logs", region_name=region)
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=hours_back)
-
-    query = f"""
-        fields @timestamp, {AGENT_ATTRIBUTE}, `acme.hop`, name,
-               `gen_ai.operation.name`, `gen_ai.tool.name`, status, duration
-        | filter {CORRELATION_ATTRIBUTE} = "{correlation_id}"
-        | sort @timestamp asc
-        | limit 500
-    """
+    groups = log_groups or span_log_groups(region)
 
     start_response = client.start_query(
-        logGroupName=log_group,
+        logGroupNames=groups,
         startTime=int(start.timestamp()),
         endTime=int(end.timestamp()),
-        queryString=query,
+        queryString=build_query(correlation_id),
     )
     query_id = start_response["queryId"]
 
     while True:
         result = client.get_query_results(queryId=query_id)
-        # All terminal states, not just the happy-path three: a query stuck
-        # on "Timeout" or "Unknown" would otherwise poll forever.
+        # All terminal states, so a query stuck on Timeout or Unknown
+        # cannot poll forever.
         if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout", "Unknown"):
             break
         time.sleep(1)
@@ -174,10 +213,7 @@ def reconstruct_request(
     if result["status"] != "Complete":
         raise RuntimeError(f"Logs Insights query ended as {result['status']}")
 
-    rows = []
-    for row in result.get("results", []):
-        rows.append({field["field"]: field["value"] for field in row})
-    return rows
+    return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
 
 
 def render_timeline(rows: list[dict[str, Any]]) -> str:
@@ -189,14 +225,14 @@ def render_timeline(rows: list[dict[str, Any]]) -> str:
     lines = ["", "Cross-agent timeline", "=" * 72]
     current_agent = None
     for row in rows:
-        agent = row.get(AGENT_ATTRIBUTE, "unknown")
+        agent = row.get("agent", "unknown")
         if agent != current_agent:
             lines.append(f"\n[{agent}]")
             current_agent = agent
         ts = row.get("@timestamp", "")[:23]
-        op = row.get("gen_ai.tool.name") or row.get("gen_ai.operation.name") or row.get("name", "")
+        op = row.get("tool") or row.get("operation") or row.get("name", "")
         status = row.get("status", "")
-        duration = row.get("duration", "")
+        duration = row.get("durationNano", "")
         lines.append(f"  {ts}  {op:<34} {status:<8} {duration}")
     return "\n".join(lines)
 
@@ -214,6 +250,7 @@ def list_deployed_agents(region: str = AWS_REGION) -> list[dict[str, Any]]:
         for runtime in page.get("agentRuntimes", []):
             deployed.append({
                 "name": runtime.get("agentRuntimeName"),
+                "id": runtime.get("agentRuntimeId"),
                 "arn": runtime.get("agentRuntimeArn"),
                 "status": runtime.get("status"),
                 "lastUpdated": str(runtime.get("lastUpdatedAt", "")),
@@ -222,25 +259,30 @@ def list_deployed_agents(region: str = AWS_REGION) -> list[dict[str, Any]]:
 
 
 def list_registered_agents(registry_id: str, region: str = AWS_REGION) -> list[dict[str, Any]]:
-    """Every record in the catalog, regardless of status."""
-    client = boto3.client("bedrock-agentcore-control", region_name=region)
+    """Every record in the catalog, regardless of status (GA `agent-registry`)."""
+    client = boto3.client("agent-registry-control", region_name=region)
     registered = []
-    paginator = client.get_paginator("list_registry_records")
-    for page in paginator.paginate(registryId=registry_id):
-        # The output key is `registryRecords`, not `records` — this is the
-        # same key used by SearchRegistryRecords on the data plane. Reading
-        # "records" here silently returns nothing on every page, which is
-        # why reconcile() used to report every deployed agent as
-        # unregistered: `registered` was always empty.
+    for page in client.get_paginator("list_registry_records").paginate(registryId=registry_id):
         for record in page.get("registryRecords", []):
             registered.append({
                 "name": record.get("name"),
+                "displayName": record.get("displayName"),
                 "recordId": record.get("recordId"),
-                "type": record.get("descriptorType"),
+                "type": record.get("recordType"),
                 "status": record.get("status"),
                 "description": record.get("description", ""),
             })
     return registered
+
+
+def _matches(runtime: dict[str, Any], record: dict[str, Any]) -> bool:
+    """A runtime matches a record authored with its name, or an auto-detected
+    record named aws-autodetected-<account>-<region>-<resourceId>."""
+    name = record.get("name") or ""
+    if name == runtime["name"] or record.get("displayName") == runtime["name"]:
+        return True
+    return bool(runtime.get("id")) and name.startswith("aws-autodetected-") \
+        and name.endswith(runtime["id"])
 
 
 def reconcile(registry_id: str, region: str = AWS_REGION) -> dict[str, Any]:
@@ -256,18 +298,24 @@ def reconcile(registry_id: str, region: str = AWS_REGION) -> dict[str, Any]:
                      something that no longer exists.
       matched      — both. The goal is for this list to be everything.
     """
-    deployed = {a["name"]: a for a in list_deployed_agents(region)}
-    registered = {r["name"]: r for r in list_registered_agents(registry_id, region)}
+    deployed = list_deployed_agents(region)
+    registered = list_registered_agents(registry_id, region)
 
-    unregistered = sorted(set(deployed) - set(registered))
-    stale = sorted(set(registered) - set(deployed))
-    matched = sorted(set(deployed) & set(registered))
-
-    unowned = []
-    for name in matched:
-        description = registered[name].get("description", "")
-        if "owner:" not in description.lower():
-            unowned.append(name)
+    matched, unregistered, unowned = [], [], []
+    used = set()
+    for runtime in deployed:
+        hits = [r for r in registered if _matches(runtime, r)]
+        if not hits:
+            unregistered.append(runtime["name"])
+            continue
+        matched.append(runtime["name"])
+        used.update(r["recordId"] for r in hits)
+        if not any("owner:" in (r.get("description") or "").lower() for r in hits):
+            unowned.append(runtime["name"])
+    stale = sorted(r["name"] for r in registered
+                   if r["recordId"] not in used and r.get("type") in ("AGENT", "MCP"))
+    unregistered.sort()
+    matched.sort()
 
     return {
         "deployed_count": len(deployed),
@@ -277,6 +325,8 @@ def reconcile(registry_id: str, region: str = AWS_REGION) -> dict[str, Any]:
         "matched": matched,
         "matched_without_owner": unowned,
         "coverage": round(len(matched) / len(deployed), 3) if deployed else None,
+        # With Organizations auto-detection on, `unregistered` should be empty
+        # for AgentCore runtimes; what remains to find lives outside AgentCore.
     }
 
 

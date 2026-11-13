@@ -1,0 +1,2 @@
+strategy,kind,run,status,unparsed,Builtin.Correctness,Builtin.Completeness,Builtin.Helpfulness,Builtin.Faithfulness,Builtin.ContextRelevance,Builtin.ContextCoverage
+semantic,gen,1,COMPLETED,0,0.9,0.91,0.793308,0.92,,

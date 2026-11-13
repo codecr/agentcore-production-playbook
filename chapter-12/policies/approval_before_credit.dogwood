@@ -1,0 +1,28 @@
+// Chapter 12, Section 12.6 — an approval is an action, not a sentence.
+//
+// Requires a successful approvals___record_approval response for the same
+// invoice within the last 24h in this policy session before a credit runs.
+// The policy session id rides in the Workload Access Token across
+// Gateway -> Runtime -> Gateway hops (single account and Region only).
+//
+// Pair with:
+//   * a plain permit for approvals___record_approval, restricted to principals
+//     whose user_role is account_manager (otherwise no response is recorded);
+//   * credit_requires_user_principal.cedar.
+// Shape follows the documented approve_claim -> disburse_payment example.
+// Live-tested 2026-11-12: denies before the approval, allows after an approval for
+// the same invoice in the SAME policy session, denies another invoice, and denies in
+// another policy session. Cross-session approvals need durable state (Section 12.6).
+// The Gateway role needs bedrock-agentcore:GetWorkloadAccessToken.
+
+permit (
+  principal is AgentCore::OAuthUser,
+  action == AgentCore::Action::"refunds___issue_credit",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/example-gw"
+)
+when temporal {
+  formerly within 24h AgentCore::Action::"approvals___record_approval"::response{
+    eventResource: resource,
+    output.invoiceId: context.input.invoice_id
+  }
+};

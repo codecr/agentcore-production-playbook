@@ -17,8 +17,19 @@ Draft 2020-12) and follows the design rules from Chapter 9 Section 9.6:
     4. Descriptions on every property. The schema constrains shape; the
        descriptions are what steer semantics. Bedrock passes them to the
        model.
-    5. Shallow nesting. Grammar compilation cost and model error rates both
-       rise with depth. Three levels is a practical ceiling.
+    5. Shallow nesting. Model error rates rise with depth. Three levels is
+       the book's practical ceiling (AWS limits optional and union-typed
+       properties, not depth).
+    6. No ranges or lengths in the schema. Bedrock's supported subset rejects
+       `minimum`, `maximum`, `multipleOf`, `minLength`, and `maxLength` with
+       HTTP 400. Those bounds are business rules; they live in
+       `check_ranges` (utils/schema_registry.py), applied after json.loads.
+
+Bedrock limits worth knowing (Bedrock user guide, "Get validated JSON
+results from models", checked October 2026): every object must set
+`additionalProperties: false` (400 otherwise); at most 12 optional
+properties per schema; at most 16 union-typed properties (nullable fields
+count); `minItems` only 0 or 1; no recursive schemas, no external `$ref`.
 
 Import and use:
 
@@ -43,9 +54,12 @@ from typing import Any
 def as_output_config(schema: dict[str, Any], name: str, description: str = "") -> dict:
     """Build the `outputConfig` parameter for the Converse / ConverseStream API.
 
-    The schema must be serialized as a JSON string — Bedrock expects a string
-    here, not a nested object. Passing a dict produces a validation error that
-    reads like a schema problem when it is actually a serialization problem.
+    On the Converse APIs the schema must be serialized as a JSON string, not a
+    nested object. Passing a dict produces a validation error that reads like a
+    schema problem when it is actually a serialization problem.
+
+    InvokeModel is different: for Claude, `output_config.format.schema` takes
+    the schema as an object (see `as_invoke_model_output_config`).
     """
     return {
         "textFormat": {
@@ -61,6 +75,15 @@ def as_output_config(schema: dict[str, Any], name: str, description: str = "") -
     }
 
 
+def as_invoke_model_output_config(schema: dict[str, Any]) -> dict:
+    """Build the `output_config` field for InvokeModel with Anthropic Claude.
+
+    Unlike Converse, the schema goes in as an object, not a JSON string.
+    The older `output_format` field is deprecated.
+    """
+    return {"format": {"type": "json_schema", "schema": schema}}
+
+
 # =========================================================================
 # Schema 1: Ticket triage
 # =========================================================================
@@ -72,13 +95,15 @@ def as_output_config(schema: dict[str, Any], name: str, description: str = "") -
 # Note the design choices:
 #   - `priority` is an enum, not a string. The downstream router switches on
 #     it; an unexpected value would land in the default branch.
-#   - `confidence` is a bounded number, so a threshold check is meaningful.
+#   - `confidence` is a number whose 0..1 range is stated in the description
+#     and enforced after parsing by `check_ranges` (utils/schema_registry.py).
+#     Bedrock rejects `minimum`/`maximum` with HTTP 400, so the bound cannot
+#     live in the schema.
 #   - `needs_human_review` is an explicit boolean rather than something the
 #     router infers from confidence. Making the escalation decision part of
 #     the contract means the model states it rather than the caller guessing.
 
 TRIAGE_SCHEMA: dict[str, Any] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "priority": {
@@ -118,11 +143,10 @@ TRIAGE_SCHEMA: dict[str, Any] = {
         },
         "confidence": {
             "type": "number",
-            "minimum": 0.0,
-            "maximum": 1.0,
             "description": (
-                "Confidence in the priority assignment. Below 0.7 the ticket "
-                "is routed to a human triager rather than an automated queue."
+                "Confidence in the priority assignment, from 0.0 to 1.0. Below "
+                "0.7 the ticket is routed to a human triager rather than an "
+                "automated queue."
             ),
         },
         "needs_human_review": {
@@ -155,7 +179,6 @@ TRIAGE_SCHEMA: dict[str, Any] = {
 # makes the extraction auditable without re-running the model.
 
 EXTRACTION_SCHEMA: dict[str, Any] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "entities": {
@@ -224,7 +247,6 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
 # instead of buried in prose.
 
 DECISION_SCHEMA: dict[str, Any] = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
     "properties": {
         "decision": {
@@ -284,8 +306,7 @@ REFUND_TOOL_SPEC: dict[str, Any] = {
         "strict": True,
         "inputSchema": {
             "json": {
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
+                            "type": "object",
                 "properties": {
                     "invoice_id": {
                         "type": "string",
@@ -294,11 +315,11 @@ REFUND_TOOL_SPEC: dict[str, Any] = {
                     },
                     "amount_cents": {
                         "type": "integer",
-                        "minimum": 1,
                         "description": (
-                            "Refund amount in cents. Integer cents, never a "
-                            "float — float money is a rounding incident "
-                            "waiting to happen."
+                            "Refund amount in integer cents, 1 or more. Never "
+                            "a float: float money is a rounding incident "
+                            "waiting to happen. The floor is enforced by "
+                            "check_ranges and the tool handler, not here."
                         ),
                     },
                     "currency": {

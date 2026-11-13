@@ -1,6 +1,6 @@
 # Agent Incident Runbook
 
-Accompanies Chapter 12 of *AgentCore in Production: The Operator's Playbook*.
+Accompanies Chapter 13 of *AgentCore in Production: The Operator's Playbook*.
 
 A template for the runbook every production agent needs. Copy it per agent
 and fill in the specifics — a generic runbook is a document, a specific one
@@ -45,6 +45,17 @@ proven otherwise.
 
 ---
 
+## First moves by failure archetype (Chapter 1)
+
+| Archetype | First signal you will actually see | First three moves |
+|---|---|---|
+| Eager interpreter | A complaint that the agent did something nobody asked for | Pull the session by correlation id; read the Policy decision log for that principal; tighten with a `forbid` |
+| Lossy session | Incoherent output late in long sessions | Check session age and Session Storage size; check for a runtime version change mid-session; reproduce on a long golden case |
+| Unverified hallucination | A customer quotes a fact or parameter that does not exist | Did retrieval return the source? Check grounding and schema validation; add the golden case |
+| Runaway loop | Cost or latency anomaly, repeated tool calls in one trace | Kill switch for the session; check retry layers and loop limits; read hop count and path |
+| Identity confusion | Wrong tenant's data, or an action under the wrong principal | SEV1: preserve evidence, Gateway `forbid`, find which layer the data came through |
+| Silent regression | Quality down for days, or evaluations that stopped arriving | Check evaluation volume before scores; correlate with the change log; roll back first, diagnose second |
+
 ## Triage: the first ten minutes
 
 Work these in order. The first three are the ones that answer most incidents.
@@ -59,8 +70,8 @@ changes, tool definition changes, Guardrail version changes, Policy changes,
 Knowledge Base syncs. Most agent incidents are a change with a delay.
 
 **2. What do the quality metrics say?**
-Open the quality dashboard. Look at the three starter evaluators over the
-last seven days, not the last hour. Look at evaluation *volume* as well as
+Open the quality dashboard. Look at the three starter evaluators (Helpfulness,
+ToolSelectionAccuracy, GoalSuccessRate) over the last seven days, not the last hour. Look at evaluation *volume* as well as
 scores — a flat line may be a stalled pipeline rather than stable quality.
 
 **3. Can you reconstruct one bad session end to end?**
@@ -153,10 +164,10 @@ suddenly cannot answer a class of question often lost its source material.
 | Action | Effect | Reversible |
 |---|---|---|
 | Revoke wallet authorization | Stops all spend immediately | Yes |
-| Disable the agent endpoint | Stops everything | Yes |
-| Tighten a Cedar policy to `forbid` a tool | Stops one capability in ~5 min (policy cache) | Yes |
+| Stop the whole agent (`kill-switch.md`) | Entry flag, Gateway `forbid`, `StopRuntimeSession`, payment sessions | Yes |
+| Tighten a Cedar policy to `forbid` a tool | Stops one capability once the policy is live (measure the delay in your account; see `kill-switch.md`) | Yes |
 | Point to previous Guardrail version | Restores previous filtering | Yes |
-| Roll back runtime version | Restores previous behavior; **resets active Session Storage** | Yes |
+| Point the endpoint at the previous runtime version (`update-agent-runtime-endpoint --agent-runtime-version N`) | Restores previous behavior; **refreshes Session Storage** for affected sessions | Yes |
 | Delete Memory records | Removes learned state | **No** |
 
 Prefer the reversible, targeted options. Deleting memory during an incident

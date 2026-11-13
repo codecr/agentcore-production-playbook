@@ -6,10 +6,10 @@ Description: >
   failures. LOG-BASED design, not metric-based: KB ingestion has no native
   AWS/Bedrock CloudWatch metrics, only JSON logs via the vended-log-delivery
   pipeline (DeliverySource/DeliveryDestination/Delivery below). Metric filters
-  extract event_type, connector_document_status.Status and level into custom
-  metrics; alarms fire on those. See kb-managed-observability.html in the
-  Bedrock user guide for the exact event schema. Deploy per KB in
-  production (skipping this is anti-pattern #3). Deploy-time note: the
+  match BOTH documented schemas (classic KBs: knowledge-bases-logging.html;
+  managed KBs: kb-managed-observability.html) and publish custom metrics;
+  alarms fire on those. Deploy per KB in
+  production (skipping this is gotcha seven). Deploy-time note: the
   deploying principal needs logs:PutDeliverySource/PutDeliveryDestination/
   CreateDelivery/PutResourcePolicy and bedrock:AllowVendedLogDeliveryForResource.
 
@@ -102,48 +102,39 @@ Resources:
   # Metric filters: extract the documented log fields into custom metrics
   # ========================================================================
   # ------------------------------------------------------------------------
-  # THE ACTUAL LOG SCHEMA (do not guess at these field names)
+  # THE ACTUAL LOG SCHEMAS (do not guess at these field names)
   # ------------------------------------------------------------------------
   # A metric filter whose pattern never matches publishes nothing, the alarm
   # on top of it sits in INSUFFICIENT_DATA forever, and if that alarm carries
   # TreatMissingData: breaching it goes to ALARM at stack creation and stays
   # there. cfn-lint and validate-template both pass a filter with invented
-  # field names, so the only defence is using the documented schema.
+  # field names, so the only defence is using the documented schemas.
   #
-  # Bedrock emits exactly two event types, per
-  # https://docs.aws.amazon.com/bedrock/latest/userguide/kb-managed-observability.html
+  # 2nd-edition correction: the earlier repo fix matched only the MANAGED
+  # knowledge base schema. The Acme documentation KB in Chapter 8 is a
+  # classic (self-configured) KB, which logs a different, also documented,
+  # schema. The filters below match either.
   #
-  # Job-level  — event_type = "StartIngestionJob.StatusChanged"
-  #   { "event_timestamp": 1718677300000,
-  #     "event": { "ingestion_job_id": "...", "data_source_id": "...",
-  #                "knowledge_base_arn": "...",
-  #                "message": "Crawling started" | "Crawling completed" },
-  #     "event_version": "1.0",
-  #     "event_type": "StartIngestionJob.StatusChanged",
-  #     "level": "INFO" }
+  # Classic KB  - docs.aws.amazon.com/bedrock/latest/userguide/knowledge-bases-logging.html
+  #   Job level:      event_type = "StartIngestionJob.StatusChanged"
+  #                   event.ingestion_job_status = INGESTION_JOB_STARTED | STOPPED |
+  #                                                COMPLETE | FAILED | CRAWLING_COMPLETED
+  #                   event.resource_statistics.number_of_resources_failed (int), ...
+  #   Document level: event_type = "StartIngestionJob.ResourceStatusChanged"
+  #                   event.status = ... | EMBEDDING_FAILED | INDEXING_FAILED |
+  #                                  FAILED | PARTIALLY_INDEXED | RESOURCE_IGNORED | ...
+  #                   event.status_reasons[], event.document_location.s3_location.uri
+  #                   level = INFO | WARN | ERROR
   #
-  #   Note what is NOT here: there is no `ingestion_job_status` field and no
-  #   `resource_statistics` object. Job progress is a human-readable
-  #   `message`, which is why the completion filter below matches on
-  #   "Crawling completed" rather than on a status enum.
+  # Managed KB  - docs.aws.amazon.com/bedrock/latest/userguide/kb-managed-observability.html
+  #   Job level:      event.message = "Crawling started" | "Crawling completed"
+  #   Document level: event.connector_document_status.Status = SUCCESS | FAILED,
+  #                   event.error_message (only on failure), event.source_uri
   #
-  # Document-level — event_type = "StartIngestionJob.ResourceStatusChanged"
-  #   { "event": { "document_id": "...", "source_uri": "...",
-  #                "crawl_action": "ADD" | "DELETE" | "UNMODIFIED",
-  #                "crawl_status":  { "Status": "SUCCESS" | "FAILED" },
-  #                "sync_status":   { "Status": "SUCCESS" | "FAILED" },
-  #                "index_status":  { "Status": "SUCCESS" | "FAILED" },
-  #                "connector_document_status": { "Status": "SUCCESS" | "FAILED" },
-  #                "chunk_statistics": { "created": int, "deleted": int,
-  #                                      "failed_to_create": int,
-  #                                      "failed_to_delete": int },
-  #                "error_message": "<only present on failure>" },
-  #     "event_type": "StartIngestionJob.ResourceStatusChanged",
-  #     "level": "INFO" | "ERROR" }
-  #
-  #   `connector_document_status.Status` is the consolidated per-document
-  #   status, and is the field AWS's own documented Logs Insights query uses
-  #   to list failed documents. That is what the per-document filter matches.
+  # RESOURCE_IGNORED is counted as a failure on purpose: an ignored runbook is
+  # exactly the Section 8.1 incident. If the source holds files that are
+  # meant to be skipped, exclude them at the data source (inclusion filters)
+  # rather than removing this status from the filter.
 
   # Per-document failures. One log entry per failed document, so a simple
   # count of matches is the number of documents that failed — no numeric
@@ -156,7 +147,10 @@ Resources:
       LogGroupName: !Ref IngestionLogGroup
       FilterPattern: >-
         { ($.event_type = "StartIngestionJob.ResourceStatusChanged")
-          && ($.event.connector_document_status.Status = "FAILED") }
+          && (($.event.connector_document_status.Status = "FAILED")
+              || ($.event.status = "FAILED") || ($.event.status = "EMBEDDING_FAILED")
+              || ($.event.status = "INDEXING_FAILED") || ($.event.status = "PARTIALLY_INDEXED")
+              || ($.event.status = "RESOURCE_IGNORED")) }
       MetricTransformations:
         - MetricName: IngestionDocumentFailedCount
           MetricNamespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
@@ -164,15 +158,14 @@ Resources:
           DefaultValue: 0
           Unit: Count
 
-  # Any ERROR-level ingestion log, whichever event type it came from.
-  # There is no documented job-level "job failed" event — job-level logs
-  # carry only a human-readable message — so `level` is the honest signal
-  # for "something went wrong during ingestion" at the job scope.
+  # Any ERROR-level ingestion log, plus a classic-KB job that ended FAILED.
+  # Managed KBs have no job-level failure status (only a message), so level
+  # is the signal there.
   IngestionErrorMetricFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
       LogGroupName: !Ref IngestionLogGroup
-      FilterPattern: '{ $.level = "ERROR" }'
+      FilterPattern: '{ ($.level = "ERROR") || ($.event.ingestion_job_status = "FAILED") }'
       MetricTransformations:
         - MetricName: IngestionErrorCount
           MetricNamespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
@@ -182,14 +175,15 @@ Resources:
 
   # Counts job completions so the stale-ingestion alarm can detect "no sync
   # completed in N days" from a Sum-over-7-days < 1 condition. Matches the
-  # documented job-level completion message.
+  # classic COMPLETE status or the managed "Crawling completed" message.
   IngestionJobCompletedMetricFilter:
     Type: AWS::Logs::MetricFilter
     Properties:
       LogGroupName: !Ref IngestionLogGroup
       FilterPattern: >-
         { ($.event_type = "StartIngestionJob.StatusChanged")
-          && ($.event.message = "Crawling completed") }
+          && (($.event.message = "Crawling completed")
+              || ($.event.ingestion_job_status = "COMPLETE")) }
       MetricTransformations:
         - MetricName: IngestionJobCompletedCount
           MetricNamespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
@@ -210,12 +204,14 @@ Resources:
         Ingestion for Knowledge Base ${KnowledgeBaseName} logged an
         ERROR-level event. Investigate with CloudWatch Logs Insights on log
         group ${IngestionLogGroup}:
-          filter level = "ERROR"
-          | fields event.document_id, event.source_uri, event.error_message, @timestamp
+          filter level = "ERROR" or event.ingestion_job_status = "FAILED"
+          | fields event.status, event.document_location.s3_location.uri, event.source_uri, event.error_message, @timestamp
           | sort @timestamp desc
         Or use the Bedrock console under Data sources -> Sync history.
-        Common causes: IAM permission gaps, oversized files for SEMANTIC
-        chunking (>1MB), embedding-model rate limits, or S3 access errors.
+        Common causes: IAM permission gaps, files over 1,000,000 characters
+        of extracted text for SEMANTIC chunking, embedding-model rate limits,
+        or S3 access errors. GetIngestionJob also returns
+        statistics.numberOfDocumentsFailed and failureReasons.
       Namespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
       MetricName: IngestionErrorCount
       Statistic: Sum
@@ -247,16 +243,17 @@ Resources:
       AlarmName: !Sub "kb-${KnowledgeBaseName}-documents-failed"
       AlarmDescription: !Sub |
         One or more documents in Knowledge Base ${KnowledgeBaseName} failed
-        to ingest, even if the overall job completed. Find them with the
-        query AWS documents for exactly this, on log group
+        to ingest, even if the overall job completed. Find them on log group
         ${IngestionLogGroup}:
-          filter event.connector_document_status.Status = "FAILED"
-          | fields event.document_id, event.source_uri, event.error_message, @timestamp
+          filter event_type = "StartIngestionJob.ResourceStatusChanged"
+            and (event.status in ["FAILED","EMBEDDING_FAILED","INDEXING_FAILED","PARTIALLY_INDEXED","RESOURCE_IGNORED"]
+                 or event.connector_document_status.Status = "FAILED")
+          | fields event.document_location.s3_location.uri, event.source_uri, event.error_message, @timestamp
           | sort @timestamp desc
         This is the failure mode that caused the "runbook that didn't exist"
         incident — silent per-document drops while the overall job appears
-        green. `error_message` is populated only on failure, so it names the
-        cause directly.
+        green. status_reasons (classic) or error_message (managed) names the
+        cause.
       Namespace: !Sub "Custom/BedrockKB/${KnowledgeBaseName}"
       MetricName: IngestionDocumentFailedCount
       Statistic: Sum
@@ -315,12 +312,12 @@ Resources:
               "properties": {
                 "metrics": [
                   ["Custom/BedrockKB/${KnowledgeBaseName}", "IngestionJobCompletedCount"],
-                  [".", "IngestionJobFailedCount"]
+                  [".", "IngestionErrorCount"]
                 ],
                 "view": "timeSeries",
                 "stacked": false,
                 "region": "${AWS::Region}",
-                "title": "Ingestion jobs — completed vs failed",
+                "title": "Ingestion jobs completed vs error events",
                 "period": 3600
               }
             },
@@ -342,7 +339,7 @@ Resources:
               "type": "log",
               "x": 0, "y": 6, "width": 24, "height": 6,
               "properties": {
-                "query": "SOURCE '${IngestionLogGroup}' | filter event_type = \"StartIngestionJob.ResourceStatusChanged\" | stats count(*) as eventCount by event.connector_document_status.Status",
+                "query": "SOURCE '${IngestionLogGroup}' | filter event_type = \"StartIngestionJob.ResourceStatusChanged\" | stats count(*) as eventCount by event.status, event.connector_document_status.Status",
                 "region": "${AWS::Region}",
                 "title": "Per-document ingestion status (Logs Insights)",
                 "view": "table"

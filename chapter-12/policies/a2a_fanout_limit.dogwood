@@ -1,0 +1,26 @@
+// Chapter 12, Section 12.8 — at most five delegations to the refunds agent
+// per policy session in ten minutes, enforced at the orchestrator's Gateway.
+//
+// Syntax is the form measured in the author's October 2026 temporal-policy
+// lab (count over ::request), adapted to an A2A passthrough target.
+// The action id "refunds-agent___POST:/" is the one the Gateway generates for an A2A passthrough target named refunds-agent (live-tested 2026-11-11, CT-12-03). It stands for every JSON-RPC method sent to the target; a method such as tasks/get is context.input.method. Deploy in
+// LOG_ONLY and read the decision log for the identifier the engine produces
+// for A2A passthrough traffic.
+//
+// Lab findings that shape this policy:
+//   * denied requests consumed a ::request limit in 40/40 trials; consider
+//     counting ::response instead (untested);
+//   * rotating the session id per call bypassed the limit (0/20 blocked);
+//     the session id must be chosen by the backend at the entry point.
+
+forbid (
+    principal,
+    action == AgentCore::Action::"refunds-agent___POST:/",
+    resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/example-gw"
+)
+when temporal {
+    exists (n: Long).
+        (count for (t: Timepoint).
+            where (formerly within 10m (AgentCore::Action::"refunds-agent___POST:/"::request{ eventResource: resource } && tp(t)))) == n
+        && n > 5
+};

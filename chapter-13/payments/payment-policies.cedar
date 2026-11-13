@@ -1,7 +1,7 @@
 // =============================================================================
 // payment-policies.cedar — Cedar policies for payment-capable tools
 // =============================================================================
-// Accompanies Chapter 12 of "AgentCore in Production: The Operator's Playbook".
+// Accompanies Chapter 13 of "AgentCore in Production: The Operator's Playbook".
 //
 // AgentCore Payments enforces spending limits per session at the
 // infrastructure layer. Cedar answers a different question at the Gateway:
@@ -15,11 +15,26 @@
 //     Cedar policies   — who may spend, on what, in which environment
 //     BudgetGuard      — how much may be spent this day and this month
 //
-// None of the three substitutes for the others. The incident in Section 12.1
-// passed the first, was never subjected to the second, and had no third.
+// None of the three substitutes for the others. The incident in Section 13.1
+// passed the session limit, was never subjected to Cedar, and had no third.
+//
+// 2nd edition (October 2026): AgentCore Policy also accepts Dogwood, the
+// temporal superset of Cedar. The daily per-session spending fence lives in
+// daily-spend.dogwood next to this file; cedarpy cannot evaluate it.
+//
+// These tools assume payment-capable calls are exposed as Gateway targets
+// (payments___pay_endpoint, payments___purchase_access). An agent that pays
+// through an in-process HTTP plugin instead never reaches the Gateway, and
+// none of these policies see it.
 //
 // Deploy with the same discipline as Chapter 3: LOG_ONLY first, read the
 // decision logs, then ENFORCE.
+//
+// Principal scope (live-tested 2026-11-10): every forbid that reads a principal
+// tag is scoped to `principal is AgentCore::OAuthUser`. Left open, the analyzer
+// reports it as Overly Restrictive for AgentCore::IamEntity (IAM callers carry
+// no tags), which fails FAIL_ON_ANY_FINDINGS. Create P01 first: a forbid added
+// to an engine with no permit is reported the same way.
 // =============================================================================
 
 
@@ -60,7 +75,7 @@ forbid (
     AgentCore::Action::"payments___pay_endpoint",
     AgentCore::Action::"payments___purchase_access"
   ],
-  resource
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/acme-lending"
 )
 unless {
   principal.hasTag("session_environment") &&
@@ -69,47 +84,43 @@ unless {
 
 
 // -----------------------------------------------------------------------------
-// P03 — Per-call amount ceiling by role, at the Gateway
+// P03 — Per-call amount ceiling by agent class, at the Gateway
 // -----------------------------------------------------------------------------
-// The same tiered pattern as the refund policy in Chapter 3, applied to
-// autonomous spend. Note the ceilings are deliberately low: these are
-// micropayments, and any single call asking for more than a couple of
-// dollars is either a mistake or a subscription, and both deserve a human.
+// A constraint, so a forbid (Chapter 3, 2nd edition: grants are permits,
+// constraints are forbids). The 1st edition wrote this as a permit, and P01
+// already permitted the same action without any ceiling; Cedar permits are
+// OR'd, so the ceiling never bound anything.
 //
-// Unlike Chapter 3's whole-dollar refund caps, these ceilings are
-// sub-dollar and need fractional precision, so amount_usd is a Cedar
-// `decimal`, not a `Long`. Cedar has no bare decimal literal and its
-// native `<=`/`>` operators only accept `long`/`datetime`/`duration` — a
-// decimal comparison has to go through the extension methods
-// (`lessThanOrEqual`, `greaterThan`, ...) against a `decimal("...")`
-// value. The Gateway must submit amount_usd in the request context as a
-// Cedar decimal, using Cedar's JSON encoding for extension values:
+// Who wrote each value?
+//   * the ceilings: this policy;
+//   * agent_class: a claim the identity provider puts on the principal;
+//   * amount_cents: the model, as the tool's argument. That is acceptable
+//     only because it is the action's own parameter: the payment tool must
+//     settle exactly this amount and refuse any 402 quote above it (x402
+//     `exact` price, or the `upto` ceiling). If the tool could pay more than
+//     the argument says, this policy would rest on a model-written value.
+// The ceilings are deliberately low: these are micropayments, and any single
+// call asking for more than a couple of dollars is either a mistake or a
+// subscription.
 //
-//     "amount_usd": {"__extn": {"fn": "decimal", "arg": "0.50"}}
-//
-// The `__extn` wrapper is required. Sending a bare JSON number (0.50), a
-// string ("0.50"), or the inner object without the wrapper
-// ({"fn": "decimal", "arg": "0.50"}) all fail the same way: Cedar raises
-// `type error: expected decimal, got <record|string>` while evaluating
-// this policy, the policy does not satisfy, and the request falls through
-// to default-deny. That failure is silent from the caller's point of view
-// — a well-formed, in-budget payment simply gets denied with no
-// indication that the context encoding was the problem. Verified with
-// cedarpy against this policy; see the ch12 decimal evaluation checks in
-// VALIDATION.md.
+// 2nd edition: amounts are integer cents (Cedar Long), declared as an integer
+// in the tool's input schema. The 1st edition used a Cedar decimal, which
+// required the caller to send Cedar's __extn JSON encoding inside tool
+// arguments; integer cents avoid that and match daily-spend.dogwood, whose
+// `sum` needs a Long.
 
-permit (
+forbid (
   principal is AgentCore::OAuthUser,
   action == AgentCore::Action::"payments___pay_endpoint",
   resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/acme-lending"
 )
-when {
+unless {
   principal.hasTag("agent_class") &&
-  context.input has amount_usd &&
+  context.input has amount_cents &&
   (
-    (principal.getTag("agent_class") == "research"   && context.input.amount_usd.lessThanOrEqual(decimal("0.50"))) ||
-    (principal.getTag("agent_class") == "analysis"   && context.input.amount_usd.lessThanOrEqual(decimal("2.00"))) ||
-    (principal.getTag("agent_class") == "operations" && context.input.amount_usd.lessThanOrEqual(decimal("10.00")))
+    (principal.getTag("agent_class") == "research"   && context.input.amount_cents <= 50) ||
+    (principal.getTag("agent_class") == "analysis"   && context.input.amount_cents <= 200) ||
+    (principal.getTag("agent_class") == "operations" && context.input.amount_cents <= 1000)
   )
 };
 
@@ -123,14 +134,14 @@ when {
 // the payment layer is ever reached.
 
 forbid (
-  principal,
+  principal is AgentCore::OAuthUser,
   action == AgentCore::Action::"payments___pay_endpoint",
-  resource
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/acme-lending"
 )
 unless {
   context.input has payee &&
   context.input.payee in [
-    "bureau.example.com",
+    "firmdata.example.com",
     "marketdata.example.com",
     "news.example.com"
   ]
@@ -138,48 +149,57 @@ unless {
 
 
 // -----------------------------------------------------------------------------
-// P05 — Subscriptions and anything with a duration require human approval
+// P05 — Subscriptions and anything with a duration require a procurement role
 // -----------------------------------------------------------------------------
-// This is the policy that would have stopped Section 12.1 outright. A
-// per-query micropayment is a transaction. A purchase that grants access
-// over time is a commitment, it recurs, and an agent has no way to know
-// whether the organization already holds one. Commitments get a human.
+// This is the stateless half of the policy that would have stopped Section
+// 13.1. A per-lookup micropayment is a transaction. A purchase that grants
+// access over time is a commitment, it recurs, and an agent has no way to
+// know whether the organization already holds one. Commitments get a human.
 //
-// The approval token comes from outside the agent — a ticket, an approval
-// bot, a finance workflow — exactly as in Chapter 3's Policy 02.
+// 2nd edition: the first edition checked an approval token in
+// context.input (`like "fin-approval-*"`). context.input is written by the
+// model, so a format check on it is forgeable: the agent can type a string
+// that matches. Chapter 3's provenance rule says conditions must read values
+// the model cannot write. This version reads a claim that the identity
+// provider puts on the principal, which only a human procurement session
+// carries. An analysis agent's token never has it, so the agent cannot buy
+// a pass however good its arithmetic is.
 
 forbid (
-  principal,
+  principal is AgentCore::OAuthUser,
   action == AgentCore::Action::"payments___purchase_access",
-  resource
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/acme-lending"
 )
 unless {
-  context.input has approval_token &&
-  context.input.approval_token like "fin-approval-*"
+  principal.hasTag("procurement_role") &&
+  principal.getTag("procurement_role") == "approver"
 };
 
 
 // -----------------------------------------------------------------------------
-// P06 — Deny payments outside business hours for high-value classes
+// P06 — Deny larger payments outside business hours
 // -----------------------------------------------------------------------------
 // Micropayments run continuously; that is the point. Larger autonomous spend
 // at 03:00 on a Sunday has no legitimate pattern in most organizations, and
-// is the signature of both a runaway loop and a compromised session. The hour
-// is supplied by the Runtime from a trusted clock, not by the agent.
+// is the signature of both a runaway loop and a compromised session.
 //
-// amount_usd is a Cedar decimal here too (see P03) — the comparison goes
-// through `.greaterThan(decimal("1.00"))` rather than the native `>`.
+// 2nd edition: the 1st edition read context.input.request_hour, a value the
+// model writes. This version reads context.system.now, the UTC timestamp
+// AgentCore Policy supplies on every request (same as Chapter 3, Policy 09).
+// The window 13:00-01:00 UTC is 07:00-19:00 at UTC-6; adjust to your hours.
 
 forbid (
-  principal,
+  principal is AgentCore::OAuthUser,
   action == AgentCore::Action::"payments___pay_endpoint",
-  resource
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/acme-lending"
 )
 when {
-  context.input has amount_usd &&
-  context.input.amount_usd.greaterThan(decimal("1.00")) &&
-  context.input has request_hour &&
-  (context.input.request_hour < 7 || context.input.request_hour > 19)
+  context.input has amount_cents &&
+  context.input.amount_cents > 100
+}
+unless {
+  duration("13h") <= context.system.now.toTime() ||
+  context.system.now.toTime() < duration("1h")
 };
 
 
@@ -191,12 +211,12 @@ when {
 // that keeps one customer's workload from spending another customer's budget.
 
 forbid (
-  principal,
+  principal is AgentCore::OAuthUser,
   action in [
     AgentCore::Action::"payments___pay_endpoint",
     AgentCore::Action::"payments___purchase_access"
   ],
-  resource
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/acme-lending"
 )
 unless {
   context.input has tenant_id &&

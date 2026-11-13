@@ -1,7 +1,9 @@
 # =============================================================================
 # Bedrock Knowledge Bases Chunking Benchmark — Terraform
 # =============================================================================
-# Accompanies Chapter 8 of "AgentCore in Production: The Operator's Playbook".
+# Accompanies Chapter 8 of "AgentCore in Production: The Operator's Playbook"
+# (2nd edition, October 2026). STATUS: IAM corrected for the 2nd edition;
+# applied against a live account on 2026-11-11 (console test CT-08-08).
 #
 # What this provisions:
 #   - 1 S3 bucket for the document corpus
@@ -14,7 +16,7 @@
 #       5. KB-custom         (NONE chunking + Lambda POST_CHUNKING transformation —
 #                             there is no CUSTOM chunking_strategy value in the API)
 #   - IAM roles for KB ingestion and Bedrock Evaluations
-#   - CloudWatch alarms for ingestion failures (the runbook-incident lesson)
+#   (Ingestion alarms live in ../../monitoring/ingestion-alarms.yaml, one stack per KB.)
 #
 # Expected cost to run the full benchmark: ~$18 USD (mostly Sonnet 4.6
 # inference for the 25-question generator pass, plus Nova Pro judge).
@@ -82,6 +84,15 @@ resource "aws_s3_bucket" "corpus" {
   bucket = "${var.benchmark_name}-corpus-${data.aws_caller_identity.current.account_id}"
 }
 
+# Intermediate storage for the custom chunker. The service rejects a custom
+# transformation whose intermediate bucket is the data source's own bucket
+# ("A custom transformation configuration cannot have the same s3 bucket for
+# intermediate storage as the data source"; live-tested 2026-11-11, CT-08-08).
+resource "aws_s3_bucket" "intermediate" {
+  bucket        = "${var.benchmark_name}-intermediate-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
+}
+
 resource "aws_s3_bucket_versioning" "corpus" {
   bucket = aws_s3_bucket.corpus.id
   versioning_configuration { status = "Enabled" }
@@ -90,7 +101,7 @@ resource "aws_s3_bucket_versioning" "corpus" {
 # -----------------------------------------------------------------------------
 # S3 Vectors backend (one bucket, one index per KB)
 # -----------------------------------------------------------------------------
-# IMPORTANT — Gotcha #3 from Chapter 8 Section 8.5: declare nonFilterableMetadataKeys
+# IMPORTANT — Gotcha #3 from Chapter 8 Section 8.6: declare nonFilterableMetadataKeys
 # at index creation to avoid the 2KB filterable-metadata cap killing ingestion.
 
 resource "aws_s3vectors_vector_bucket" "main" {
@@ -160,6 +171,8 @@ resource "aws_iam_role_policy" "kb_role_inline" {
     Version = "2012-10-17",
     Statement = [
       { Effect = "Allow", Action = ["s3:GetObject","s3:ListBucket"], Resource = [aws_s3_bucket.corpus.arn, "${aws_s3_bucket.corpus.arn}/*"] },
+      # The service reads and writes the chunker's intermediate files with this role.
+      { Effect = "Allow", Action = ["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"], Resource = [aws_s3_bucket.intermediate.arn, "${aws_s3_bucket.intermediate.arn}/*"] },
       { Effect = "Allow", Action = ["bedrock:InvokeModel"], Resource = [var.embedding_model_arn] },
       # Scoped to the one vector bucket this benchmark provisions, not Resource: "*".
       { Effect = "Allow", Action = ["s3vectors:*"], Resource = [
@@ -167,7 +180,7 @@ resource "aws_iam_role_policy" "kb_role_inline" {
           "${aws_s3vectors_vector_bucket.main.vector_bucket_arn}/*"
         ]
       },
-      # GOTCHA #2 (blog Problem 2) — Bedrock invokes the Lambda using the qualified
+      # Lambda-chunker gotcha (blog #2, Problem 2; the book's "eighth" problem) — Bedrock invokes the Lambda using the qualified
       # ARN (<arn>:$LATEST), not the base ARN. Both must be listed or IAM won't match.
       { Effect = "Allow", Action = ["lambda:InvokeFunction"], Resource = [
           aws_lambda_function.custom_chunker.arn,
@@ -194,6 +207,20 @@ resource "aws_iam_role" "custom_chunker" {
   })
 }
 
+# The Lambda reads the batches the service wrote and writes the chunks back, both
+# in the intermediate bucket.
+resource "aws_iam_role_policy" "custom_chunker_s3" {
+  role = aws_iam_role.custom_chunker.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect   = "Allow",
+      Action   = ["s3:GetObject", "s3:PutObject"],
+      Resource = ["${aws_s3_bucket.intermediate.arn}/*"]
+    }]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "custom_chunker_basic" {
   role       = aws_iam_role.custom_chunker.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
@@ -216,7 +243,7 @@ resource "aws_lambda_function" "custom_chunker" {
   memory_size      = 512
 }
 
-# GOTCHA #2 (blog Problem 1) — an IAM permission on the KB role is not enough.
+# Lambda-chunker gotcha (blog #2, Problem 1) — an IAM permission on the KB role is not enough.
 # Lambda also requires a resource-based policy that lets bedrock.amazonaws.com
 # invoke this specific function. The console creates this automatically when
 # you configure a custom chunker there; raw Terraform must declare it explicitly.
@@ -267,7 +294,14 @@ resource "aws_bedrockagent_data_source" "ds" {
 
   data_source_configuration {
     type = "S3"
-    s3_configuration { bucket_arn = aws_s3_bucket.corpus.arn }
+    # The evaluation runner writes its dataset and job output into this same bucket
+    # (eval-input/, eval-output/). Without a prefix the data source indexes them, so a
+    # re-ingestion after an evaluation puts the reference answers into the retrieval
+    # index and two output files that exceed the embedding limits (live-tested 2026-11-11).
+    s3_configuration {
+      bucket_arn         = aws_s3_bucket.corpus.arn
+      inclusion_prefixes = ["corpus/"]
+    }
   }
 
   vector_ingestion_configuration {
@@ -316,7 +350,7 @@ resource "aws_bedrockagent_data_source" "ds" {
       for_each = each.value.custom_lambda != null ? [each.value.custom_lambda] : []
       content {
         intermediate_storage {
-          s3_location { uri = "s3://${aws_s3_bucket.corpus.bucket}/intermediate/${each.key}/" }
+          s3_location { uri = "s3://${aws_s3_bucket.intermediate.bucket}/${each.key}/" }
         }
         # GOTCHA — the provider block is named "transformation" (singular), not
         # "transformations", even though the underlying API field is a list.
@@ -340,7 +374,7 @@ resource "aws_bedrockagent_data_source" "ds" {
 # chapter to get a role from, so we provision one here rather than just fixing
 # the header comment that claimed this already existed.
 #
-# GOTCHA #7 (blog) — "does not have permission to call the KB API" is really
+# GOTCHA #7 in the April blog post, gotcha 5 in the book — "does not have permission to call the KB API" is really
 # two separate things, either of which alone produces that exact message:
 #   1. Trust policy must scope aws:SourceArn to evaluation-job/* (below).
 #   2. Permission policy must list the KB ARNs explicitly, not a wildcard.
@@ -348,6 +382,8 @@ resource "aws_bedrockagent_data_source" "ds" {
 locals {
   generator_model_arn = "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.generator_model_id}"
   judge_model_arn      = "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.judge_model_id}"
+  # "us.anthropic.claude-sonnet-4-6" -> "anthropic.claude-sonnet-4-6" in any US Region.
+  generator_foundation_model_arns = "arn:aws:bedrock:*::foundation-model/${join(".", slice(split(".", var.generator_model_id), 1, length(split(".", var.generator_model_id))))}*"
 }
 
 resource "aws_iam_role" "eval_role" {
@@ -371,16 +407,31 @@ resource "aws_iam_role_policy" "eval_role_inline" {
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
+      # 2nd edition fix: the first edition used "bedrock-agent-runtime:Retrieve"
+      # and "bedrock-agent-runtime:RetrieveAndGenerate", which are not IAM
+      # actions. The IAM prefix is "bedrock:".
       {
         Effect   = "Allow",
-        Action   = ["bedrock-agent-runtime:Retrieve", "bedrock-agent-runtime:RetrieveAndGenerate"],
-        # Specific KB ARNs, not a wildcard — see GOTCHA #7 above.
+        Action   = ["bedrock:Retrieve", "bedrock:GetKnowledgeBase"],
+        # Specific KB ARNs, not a wildcard — see the eval-role GOTCHA note above.
         Resource = [for k, v in aws_bedrockagent_knowledge_base.kb : v.arn]
       },
       {
+        # RetrieveAndGenerate does not support resource-level permissions.
         Effect   = "Allow",
-        Action   = ["bedrock:InvokeModel"],
-        Resource = [local.generator_model_arn, local.judge_model_arn]
+        Action   = ["bedrock:RetrieveAndGenerate"],
+        Resource = "*"
+      },
+      {
+        # A cross-Region inference profile needs InvokeModel on the profile
+        # AND on the foundation model in every Region the profile routes to.
+        Effect   = "Allow",
+        Action   = ["bedrock:InvokeModel", "bedrock:GetInferenceProfile"],
+        Resource = [
+          local.generator_model_arn,
+          local.generator_foundation_model_arns,
+          local.judge_model_arn,
+        ]
       },
       {
         Effect   = "Allow",

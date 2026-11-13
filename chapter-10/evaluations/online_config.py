@@ -11,7 +11,7 @@ sometime around Saturday morning instead of Monday.
 This module wraps the control-plane calls with the defaults the chapter
 argues for:
 
-    - Start with three evaluators, not thirteen (Section 10.4)
+    - Start with three evaluators, not all eighteen built-ins (Section 10.4)
     - 10% sampling for medium traffic, dialed by volume (Section 10.5)
     - Filters added only after a week of unfiltered baseline data
     - Every configuration is code, versioned, and reviewable
@@ -61,7 +61,7 @@ BUILTIN_ARN_TEMPLATE = "arn:aws:bedrock-agentcore:::evaluator/{evaluator_id}"
 #   GoalSuccessRate       — did the session accomplish what it set out to do?
 #
 # Between them they cover the response, the trajectory, and the outcome.
-# Thirteen evaluators on day one produces thirteen dashboards nobody reads.
+# Eighteen evaluators on day one produces eighteen dashboards nobody reads.
 
 STARTER_EVALUATORS: list[str] = [
     "Builtin.Helpfulness",
@@ -78,7 +78,7 @@ SAFETY_EVALUATORS: list[str] = [
 
 RAG_EVALUATORS: list[str] = [
     "Builtin.Faithfulness",
-    "Builtin.ContextRelevance",
+    "Builtin.ResponseRelevance",
 ]
 
 
@@ -86,7 +86,7 @@ RAG_EVALUATORS: list[str] = [
 # Sampling guidance
 # =========================================================================
 
-def recommended_sampling_rate(sessions_per_day: int) -> float:
+def recommended_sampling_rate(sessions_per_day: int, ceiling: float = 100.0) -> float:
     """Pick a sampling percentage for a given traffic volume.
 
     The trade-off is cost against statistical usefulness. Too low and a
@@ -96,12 +96,14 @@ def recommended_sampling_rate(sessions_per_day: int) -> float:
     The shape of this function is the chapter's rule of thumb: sample enough
     to get on the order of a few hundred scored sessions per day, and cap
     the rate so very high volume does not run away with the budget.
+    `ceiling` is the budget's answer: at low volume the volume target asks for
+    nearly every session, and the judge bill decides how far to go (Section 10.5).
     """
     if sessions_per_day <= 0:
         return 100.0
     target_scored_per_day = 300
     rate = (target_scored_per_day / sessions_per_day) * 100
-    return round(min(100.0, max(1.0, rate)), 2)
+    return round(min(ceiling, 100.0, max(1.0, rate)), 2)
 
 
 # =========================================================================
@@ -190,6 +192,8 @@ class OnlineEvaluationConfig:
             problems.append("at least one evaluator is required")
         if len(self.filters) > 5:
             problems.append("at most 5 filters are supported")
+        # The service allows 25 evaluators per online configuration (quotas
+        # page, Oct 2026). Five is the book's opinion, not an AWS limit.
         if len(self.evaluators) > 5:
             problems.append(
                 "more than 5 evaluators on a new configuration is usually a "
@@ -279,11 +283,11 @@ def acme_support_config(
     agent_runtime_arn: str,
     evaluation_execution_role_arn: str,
     enable_on_create: bool = True,
-    sessions_per_day: int = 3000,
+    sessions_per_day: int = 330,
 ) -> OnlineEvaluationConfig:
     """The configuration the Platform Team should have had on the Friday."""
     return OnlineEvaluationConfig(
-        name="acme-support-online-eval",
+        name="acme_support_online_eval",
         description=(
             "Continuous quality monitoring for the Acme SaaS customer support "
             "agent. Starter evaluator set; revisit after four weeks of baseline."
@@ -292,7 +296,10 @@ def acme_support_config(
         evaluation_execution_role_arn=evaluation_execution_role_arn,
         enable_on_create=enable_on_create,
         evaluators=list(STARTER_EVALUATORS),
-        sampling_percentage=recommended_sampling_rate(sessions_per_day),
+        # The volume target alone would score 90.91% of Acme's 330 sessions a day;
+        # at about $0.15 per scored session that is ~$1,500 a month, so the
+        # budget caps it at 20% (Section 10.5, Appendix C, Section C.6).
+        sampling_percentage=recommended_sampling_rate(sessions_per_day, ceiling=20.0),
         # No filters for the first week. Filters applied before you know what
         # normal looks like will hide the very traffic you needed to see.
         filters=[],
@@ -309,9 +316,9 @@ if __name__ == "__main__":
         evaluation_execution_role_arn=(
             "arn:aws:iam::111122223333:role/acme-support-eval-role"
         ),
-        sessions_per_day=3000,
+        sessions_per_day=330,
     )
     print(json.dumps(demo.to_request(), indent=2))
     print()
-    for volume in (200, 3_000, 50_000, 500_000):
+    for volume in (200, 330, 3_000, 50_000, 500_000):
         print(f"{volume:>8} sessions/day -> {recommended_sampling_rate(volume):>6.2f}% sampling")

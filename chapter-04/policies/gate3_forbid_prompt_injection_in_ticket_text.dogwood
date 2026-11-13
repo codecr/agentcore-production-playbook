@@ -1,0 +1,21 @@
+// Guardrails in Policy at the Gateway (AgentCore, June 17, 2026). Chapter 4, Section 4.5.
+// Gate 3 with a language check: deny support___create_ticket when the
+// Guardrails prompt-attack score on the ticket body exceeds 0.4 (AgentCore's
+// suggested default for prompt attack). Scores arrive in steps of 0.2.
+// Detection is probabilistic; the decision is deterministic.
+//
+// A forbid whose only gate is a guardrail looks unconditional to policy
+// validation and is reported "Overly Restrictive" unless a permit for the same
+// action exists. Create the permit first, or submit with IGNORE_ALL_FINDINGS.
+// The Gateway execution role needs bedrock:InvokeGuardrailChecks.
+// Untested by the author.
+
+forbid (
+  principal,
+  action == AgentCore::Action::"support___create_ticket",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:REGION:ACCOUNT:gateway/GATEWAY_ID"
+)
+when guardrails {
+  BedrockGuardrails::PromptAttack(["PROMPT_INJECTION"], [context.input.title])["PROMPT_INJECTION"]
+    .confidenceScore.greaterThan(decimal("0.4"))
+};

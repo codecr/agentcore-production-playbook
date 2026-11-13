@@ -1,0 +1,64 @@
+// =============================================================================
+// daily-spend.dogwood — Dogwood temporal policy: per-policy-session spend fence
+// =============================================================================
+// Accompanies Chapter 13 (Section 13.12) of "AgentCore in Production: The
+// Operator's Playbook", 2nd edition (October 2026).
+//
+// Dogwood is the open-source, Cedar-compatible language AgentCore Policy has
+// accepted since August 6, 2026. Every valid Cedar policy is valid Dogwood;
+// `when temporal { ... }` blocks add conditions over the history of the
+// *policy session*. Syntax follows the AWS ML blog "Securing AI agents with
+// temporal policies in Amazon Bedrock AgentCore" (Policy 4, cumulative cap).
+//
+// What this bounds: the sum of `amount_cents` on payments___pay_endpoint
+// requests in the same policy session over the last 24 hours (the maximum
+// window), including the current request. Above $40.00 the call is denied.
+//
+// What decides whether it bounds anything useful: the policy session id,
+// sent in the x-amzn-bedrock-agentcore-policy-session-id header and chosen
+// by YOUR backend, never by the agent. Derive it from (agent, tenant, UTC
+// date), e.g. HMAC(key, "credit-analysis|acme-lending|2026-06-03"), so all of
+// a day's application sessions share one history. One id per application
+// session reproduces the Section 13.1 incident.
+//
+// Caveats from the author's October 2026 lab (5,294 calls):
+//   * denied requests also count toward ::request limits (40 of 40 trials);
+//   * an agent that rotates its own session id bypasses limits (0 of 20 blocked);
+//   * creating, updating, or deleting ANY temporal policy invalidates every
+//     live policy session; the next call returns HTTP 200 with JSON-RPC
+//     -32005 and a new session starts with an empty history, so the day's
+//     running total resets at every temporal-policy deploy.
+// Quotas: 20 temporal policies per engine, 3 temporal operators per policy,
+// 24 h maximum window.
+//
+// The tool's input schema must declare amount_cents as an integer (Long).
+// cedarpy cannot evaluate this file; test it in LOG_ONLY against the Gateway.
+// Syntax kept consistent with chapter-03/policies/temporal/.
+// Local testing: cedarpy cannot parse Dogwood; validate on AWS only.
+// Live-tested 2026-11-12 (cap set to 1000 cents, IAM principal in the lab):
+//   * the sum includes the current request: 600 and 300 passed, 200 was denied;
+//   * with `principal` left open the policy fails strict validation
+//     ("Overly Restrictive"), so it is scoped to OAuth users;
+//   * it does not count payments___purchase_access. Dogwood rejected both a
+//     disjunction of two actions inside `formerly` and `a + b > cap` over two
+//     sums, so daily-purchase.dogwood caps purchase_access on its own; the
+//     combined ceiling is budget_guard.py's job.
+// =============================================================================
+
+forbid (
+  principal is AgentCore::OAuthUser,
+  action == AgentCore::Action::"payments___pay_endpoint",
+  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/acme-lending"
+)
+when temporal {
+  exists (total: Long). (
+    (sum c for (c: Long), (t: Timepoint). where (
+      formerly within 24h (
+        AgentCore::Action::"payments___pay_endpoint"::request{
+          input.amount_cents: c, eventResource: resource
+        }
+        && tp(t)
+      )
+    )) == total && total > 4000
+  )
+};

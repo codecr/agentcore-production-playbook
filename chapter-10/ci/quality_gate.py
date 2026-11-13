@@ -12,11 +12,12 @@ regresses beyond its tolerance.
 WHY PER-CASE `Evaluate` AND NOT `StartBatchEvaluation`:
 The batch path is cheaper per case, but `GetBatchEvaluation` returns only
 per-evaluator aggregate statistics — total/completed/failed session counts
-and one average score per evaluator. There is no per-session or per-category
-field anywhere in that response (verified against the real service model).
-A gate built on it therefore cannot do the one thing this gate exists to do:
-notice that outage-escalation collapsed to zero while the average barely
-moved, because most golden-set traffic is documentation lookups.
+and one average score per evaluator. Per-session scores are written to a
+CloudWatch Logs stream instead, so a gate built on batch would have to read
+them back and join each one to its golden case before it could see a
+category at all. This gate exists to notice that outage-escalation collapsed
+to zero while the average barely moved, because most golden-set traffic is
+documentation lookups; per-case `Evaluate` gives it that directly.
 
 `Evaluate` is synchronous, takes one evaluator and one session's spans per
 call, and accepts the ground truth inline via `evaluationReferenceInputs`.

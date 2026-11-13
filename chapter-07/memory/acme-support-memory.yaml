@@ -1,37 +1,57 @@
-# AgentCore Memory configuration for Acme SaaS customer support agent.
-# Accompanies Chapter 7 of "AgentCore in Production: The Operator's Playbook".
+# AgentCore Memory configuration for the Acme SaaS customer support agent.
+# Accompanies Chapter 7 of "AgentCore in Production: The Operator's Playbook"
+# (2nd edition, October 2026).
 #
-# NAMESPACE DESIGN (read before editing any Namespaces list below):
-# Namespaces are keyed by {actorId} — the real CreateMemory API only
-# supports {actorId}, {sessionId}, and {memoryStrategyId} as namespace
-# placeholders. There is no {tenantId} or {userId} placeholder. The
-# runtime already combines tenant and user into
-# actor_id = f"{tenant_id}/{user_id}" (see utils/memory_helpers.py), so
-# every per-user namespace below keys off {actorId} directly.
+# NAMESPACE DESIGN (read before editing any NamespaceTemplates below)
+# -------------------------------------------------------------------
+# Built-in placeholders: {actorId}, {sessionId}, {memoryStrategyId}.
+# Custom placeholders (August 2026): declared under NamespaceKeys, supplied
+# per event in CreateEvent extractionConfig.namespaceVariables. Keys and
+# values must be lowercase.
 #
-# Tenant-wide facts (shared across every user of one tenant, not scoped
-# to a single user) have no native placeholder either. This template
-# uses a reserved sentinel actor per tenant — actor_id =
-# f"{tenant_id}/__tenant_facts__" — so tenant-wide knowledge still lives
-# in this one Memory resource instead of requiring a dedicated Memory
-# resource per tenant. See the AcmeTenantFacts strategy below and
-# memory_helpers.py::record_tenant_fact_event for the write path.
+#   tenantid     - supplied on EVERY conversation event. Scopes per-user
+#                  namespaces under the tenant.
+#   tenantfacts  - supplied ONLY by memory_helpers.record_tenant_fact_event,
+#                  from code paths that verified the fact. If an event omits
+#                  a variable that a strategy's template references, the
+#                  service skips extraction for that strategy (the event is
+#                  still stored). So ordinary chat events can never write to
+#                  the tenant-wide facts namespace -- the memory-poisoning
+#                  defense from Section 7.8. Expect NamespaceResolutionFailure
+#                  entries in the vended logs for every skipped extraction;
+#                  they are by design, do not alarm on them.
+#
+# actorId is the identity provider's subject ("sub") for the end user, so
+# the Memory FGAC policies in ../policies/ can require actorId == sub.
+#
+# Namespaces use the normalized form: leading and trailing slash.
+#
+# Live-tested 2026-11-11 (CT-07-01): the memory accepts ONE built-in strategy of each
+# type, so AcmeTenantFacts is a custom strategy with a semantic override; the
+# summary strategy needs {sessionId} in its namespace.
+#
+# RETENTION
+# ---------
+# RecordExpirySpecification (October 13, 2026) sets a long-term TTL per
+# strategy, minimum 31 days. The service requires one shared value for the
+# semantic + user-preference group and one for the summary + episodic group.
+# Expired records are removed by a background process that can take days;
+# use utils/forget_actor.py for immediate deletion.
+#
+# STATUS: deployed against a live account on 2026-11-11, after the two corrections
+# described above (one built-in strategy per type; {sessionId} in the summary namespace).
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
-  AgentCore Memory for the Acme SaaS customer support agent. One Memory
-  resource with four built-in strategies: User Preference, Semantic
-  Memory (per-user facts + tenant-wide facts), Summary Memory, and
-  Episodic Memory. Namespaces key off {actorId}/{sessionId} — the real
-  CreateMemory placeholders. See inline comments for the tenant-wide-facts
-  sentinel-actor pattern.
+  AgentCore Memory for the Acme SaaS customer support agent. Five strategies
+  (user preferences, tenant facts, user facts, session summaries, episodic
+  incidents) scoped by tenant through custom namespace keys, with long-term
+  TTLs.
 
 Parameters:
   MemoryName:
     Type: String
     Default: acme_support_memory
-    Description: |
-      Name for the Memory resource. Must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$
-      per the real API — letters, digits, and underscores only. No hyphens.
+    Description: Letters, digits, and underscores only. No hyphens.
 
   Environment:
     Type: String
@@ -43,125 +63,143 @@ Parameters:
     Default: 30
     MinValue: 3
     MaxValue: 365
-    Description: |
-      Days before raw conversation events expire from short-term storage.
-      Long-term records (extracted by strategies) persist independently.
-      The real EventExpiryDuration property is a plain integer number of
-      days (minimum 3, maximum 365) — not an ISO-8601 duration string.
+    Description: Days before raw events expire from short-term memory.
+
+  OverrideModelId:
+    Type: String
+    Default: us.anthropic.claude-haiku-5-5
+    Description: Model the override strategy uses for extraction and consolidation.
+
+  FactsAndPreferencesTtlDays:
+    Type: Number
+    Default: 365
+    MinValue: 31
+    Description: Long-term TTL shared by the semantic and user-preference strategies.
+
+  SummariesAndEpisodesTtlDays:
+    Type: Number
+    Default: 180
+    MinValue: 31
+    Description: Long-term TTL shared by the summary and episodic strategies.
 
 Resources:
+
+  # Role the Memory service assumes to run the override strategy's model calls.
+  MemoryExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-extraction-model
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - "arn:aws:bedrock:*::foundation-model/*"
+                  - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
 
   AcmeSupportMemory:
     Type: AWS::BedrockAgentCore::Memory
     Properties:
       Name: !Ref MemoryName
-      Description: |
-        Acme SaaS customer support agent memory. Four built-in strategies
-        cover user preferences, factual knowledge, session summaries, and
-        episodic patterns of past resolutions.
+      Description: Acme SaaS customer support agent memory.
       EventExpiryDuration: !Ref ShortTermMemoryExpiryDays
+      MemoryExecutionRoleArn: !GetAtt MemoryExecutionRole.Arn
+
+      NamespaceKeys:
+        - Key: tenantid
+          Validation:
+            RegexPattern: "^[a-z0-9][a-z0-9-]{1,62}$"
+        - Key: tenantfacts
+          Validation:
+            RegexPattern: "^[a-z0-9][a-z0-9-]{1,62}$"
 
       MemoryStrategies:
-        # =============================================================
-        # Strategy 1: User Preference
-        # =============================================================
-        # Extracts user-stated preferences: communication style, response
-        # format, language preference, content choices. The strategy that
-        # would have prevented the "customer who felt forgotten" incident
-        # from Chapter 7 Section 7.1.
+        # Strategy 1: user preferences. The strategy that would have
+        # prevented the Section 7.1 incident.
         - UserPreferenceMemoryStrategy:
             Name: AcmeUserPreferences
             Description: User communication preferences and choices
-            Namespaces:
-              # {actorId} is the opaque tenant/user composite the runtime
-              # already builds (actor_id = f"{tenant_id}/{user_id}").
-              # Preferences are scoped to the user who stated them.
-              - "users/{actorId}/preferences"
+            NamespaceTemplates:
+              - "/tenant/{tenantid}/actor/{actorId}/preferences/"
+            RecordExpirySpecification:
+              RecordExpiryDurationDays: !Ref FactsAndPreferencesTtlDays
 
-        # =============================================================
-        # Strategy 2: Semantic Memory
-        # =============================================================
-        # Extracts facts and knowledge. "Globex Corp is on the Business
-        # tier", "Maria is the primary contact", "switched from monthly
-        # to annual billing in March". Two strategies because some facts
-        # are about the tenant (durable, shared across every user of that
-        # tenant) and some are about one user (private to that user).
-        #
-        # The real API has no {tenantId} placeholder independent of
-        # {actorId}, so "everything under this tenant, any user" can't be
-        # expressed as a namespace template the way an earlier draft of
-        # this file assumed. AcmeTenantFacts instead uses a reserved
-        # sentinel actor per tenant: actor_id =
-        # f"{tenant_id}/__tenant_facts__". That sentinel is written to
-        # explicitly via memory_helpers.record_tenant_fact_event — it is
-        # NOT populated implicitly from every user's conversation, because
-        # there is no server-side mechanism to route "this fact belongs to
-        # the whole tenant" out of a per-actor namespace template.
-        - SemanticMemoryStrategy:
+        # Strategy 2a: tenant-wide facts. Populated ONLY by events that carry
+        # the tenantfacts variable (see header). Never by chat events.
+        # A memory accepts one built-in strategy of each type (live-tested
+        # 2026-11-11: "Only one strategy of each type is allowed"), and the
+        # user-level facts below already use the built-in semantic one. This
+        # one is therefore a custom strategy with a semantic override, which
+        # also needs the memory execution role to invoke the model.
+        - CustomMemoryStrategy:
             Name: AcmeTenantFacts
-            Description: >-
-              Tenant-level facts shared across users. Populated only via
-              the reserved sentinel actor "{tenantId}/__tenant_facts__" —
-              see memory_helpers.record_tenant_fact_event and
-              memory_helpers.tenant_facts_namespace.
-            Namespaces:
-              - "tenant-facts/{actorId}"
+            Description: Verified tenant-level facts, written deliberately by the application
+            NamespaceTemplates:
+              - "/tenant/{tenantfacts}/facts/"
+            RecordExpirySpecification:
+              RecordExpiryDurationDays: !Ref FactsAndPreferencesTtlDays
+            Configuration:
+              SemanticOverride:
+                Extraction:
+                  ModelId: !Ref OverrideModelId
+                  AppendToPrompt: >-
+                    Extract only durable facts about the customer organization
+                    (plan or tier, contract terms, billing arrangement, named
+                    contacts and their roles). Ignore preferences, opinions,
+                    and anything about a single user's mood or request.
+                Consolidation:
+                  ModelId: !Ref OverrideModelId
+                  AppendToPrompt: >-
+                    Keep one current record per fact. When a newer statement
+                    contradicts an older one, keep the newer one.
 
+        # Strategy 2b: user-level facts, private to each user.
         - SemanticMemoryStrategy:
             Name: AcmeUserFacts
             Description: User-level facts private to each user
-            Namespaces:
-              - "users/{actorId}/facts"
+            NamespaceTemplates:
+              - "/tenant/{tenantid}/actor/{actorId}/facts/"
+            RecordExpirySpecification:
+              RecordExpiryDurationDays: !Ref FactsAndPreferencesTtlDays
 
-        # =============================================================
-        # Strategy 3: Summary Memory
-        # =============================================================
-        # Condensed summaries of past sessions. Lets a new conversation
-        # start with relevant context without replaying every message.
-        # Useful when sessions span weeks/months — the summary fits in
-        # the context window where the full transcript would not.
+        # Strategy 3: session summaries, per user.
         - SummaryMemoryStrategy:
             Name: AcmeSessionSummaries
             Description: Summaries of past support sessions
-            Namespaces:
-              - "users/{actorId}/sessions"
+            NamespaceTemplates:
+              - "/tenant/{tenantid}/actor/{actorId}/sessions/{sessionId}/"
+            RecordExpirySpecification:
+              RecordExpiryDurationDays: !Ref SummariesAndEpisodesTtlDays
 
-        # =============================================================
-        # Strategy 4: Episodic Memory
-        # =============================================================
-        # Structured episodes (situation, intent, actions, outcome) with
-        # cross-episode reflections. The most powerful strategy for
-        # repeating problem domains — billing disputes, troubleshooting
-        # workflows, multi-step escalations.
-        #
-        # IMPORTANT: Episodic generation is asynchronous and only fires
-        # when an episode completes. Latency is minutes, not seconds.
-        # Design flows accordingly. See Chapter 7 Section 7.7.
-        #
-        # Episodes are namespaced per actor + session (one incident = one
-        # session). Reflections — the cross-episode patterns — use the
-        # dedicated ReflectionConfiguration block and are namespaced per
-        # actor only, so this user's agent learns across all of that
-        # user's own incidents.
-        #
-        # NARROWED FROM AN EARLIER DRAFT: this template no longer attempts
-        # a tenant-wide "patterns across every user" namespace for
-        # episodes. There's no {tenantId}-only placeholder, and unlike
-        # facts, episodes are tied to real session activity — the
-        # sentinel-actor trick used for AcmeTenantFacts doesn't translate
-        # cleanly here (it would require mirroring every user's incident
-        # into a synthetic actor's session history). Genuine cross-tenant
-        # incident-pattern learning would need a dedicated Memory resource
-        # per tenant — a bigger architectural change, out of scope for
-        # this template fix. Flagged for author review.
+        # Strategy 4: episodic. Episodes per user and session; reflections
+        # one level up, across every user of the tenant. That is deliberate
+        # for Acme (billing-dispute patterns are tenant knowledge) and it is
+        # also a privacy decision: reflections can paraphrase one user's case
+        # into guidance another user's session reads. To keep users apart,
+        # move the reflection template to /tenant/{tenantid}/incidents/{actorId}/.
+        # Episodic generation is asynchronous and only fires when an episode
+        # completes; in the author's March 2026 lab it took 30-60 minutes.
         - EpisodicMemoryStrategy:
             Name: AcmeIncidentPatterns
-            Description: Per-user episodes and cross-episode reflections of issue resolutions
-            Namespaces:
-              - "users/{actorId}/incidents/{sessionId}"
+            Description: Episodes and tenant-level reflections of issue resolutions
+            NamespaceTemplates:
+              - "/tenant/{tenantid}/incidents/{actorId}/{sessionId}/"
             ReflectionConfiguration:
-              Namespaces:
-                - "users/{actorId}/incidents"
+              NamespaceTemplates:
+                - "/tenant/{tenantid}/incidents/"
+            RecordExpirySpecification:
+              RecordExpiryDurationDays: !Ref SummariesAndEpisodesTtlDays
 
       Tags:
         Environment: !Ref Environment
@@ -169,9 +207,11 @@ Resources:
         Chapter: "playbook-chapter-07"
 
 Outputs:
+  # Ref on AWS::BedrockAgentCore::Memory returns the ARN, not the ID. The
+  # first edition exported Ref as "MemoryId", which handed the agent an ARN.
   MemoryId:
     Description: ID of the AgentCore Memory resource
-    Value: !Ref AcmeSupportMemory
+    Value: !GetAtt AcmeSupportMemory.MemoryId
     Export:
       Name: !Sub "${AWS::StackName}-MemoryId"
 
@@ -182,7 +222,5 @@ Outputs:
       Name: !Sub "${AWS::StackName}-MemoryArn"
 
   StrategyNames:
-    Description: |
-      Strategy names for reference. Use these when querying
-      retrieve_memory_records with strategy filters.
+    Description: Strategy names, for reference when filtering retrievals.
     Value: "AcmeUserPreferences,AcmeTenantFacts,AcmeUserFacts,AcmeSessionSummaries,AcmeIncidentPatterns"

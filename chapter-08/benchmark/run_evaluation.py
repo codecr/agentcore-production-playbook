@@ -1,337 +1,230 @@
 """
-run_evaluation.py — Run the chunking benchmark against the 5 deployed KBs.
+run_evaluation.py - Run the chunking benchmark against the deployed KBs.
 
-Accompanies Chapter 8 of "AgentCore in Production: The Operator's Playbook".
+Accompanies Chapter 8 of "AgentCore in Production: The Operator's Playbook"
+(2nd edition, October 2026).
 
-What this script does:
-    For each of the 5 deployed Knowledge Bases (none, fixed-size, hierarchical,
-    semantic, custom), this script submits a Bedrock Evaluations job using the
-    25-question ground-truth corpus. The judge is Nova Pro (cross-family,
-    on the allowlist — see gotcha #4 in Chapter 8 Section 8.5).
+For each Knowledge Base in the Terraform output, submit a native Bedrock
+RAG evaluation job (applicationType=RagEvaluation):
 
-    Each job evaluates four generation metrics:
-        - Correctness   (does the answer match ground truth)
-        - Completeness  (does it cover all aspects of the question)
-        - Helpfulness   (well-written and useful — see gotcha re using this for chunking)
-        - Faithfulness  (grounded in retrieved context)
+  * retrieve-and-generate job, always: Builtin.Correctness, Completeness,
+    Helpfulness, Faithfulness. Generator: Sonnet 4.6 via inference profile.
+  * retrieve-only job, with --retrieval-metrics: Builtin.ContextRelevance and
+    Builtin.ContextCoverage. Gotcha 6: these cannot share a job with the
+    generation metrics. The first edition skipped this job; Section 8.4 lists
+    that as one of the benchmark's four weaknesses.
 
-    Results are polled until completion and aggregated into a comparison table.
+Judge: Nova Pro by default. Sonnet 4.5/4.6 and Opus 4.5-4.8 are now on the
+judge allowlist (gotcha 4 is resolved); Nova Pro stays as a cross-family
+judge for Claude-generated answers. Override with JUDGE_MODEL_ID.
+
+Repeats: --repeats N submits N independent generation jobs per KB and
+reports mean and min-max range. The 2nd edition asks for 3-5 (CT-08-10).
 
 Usage:
-    # Configure once
-    export AWS_REGION=us-east-1
-    export CORPUS_BUCKET=<from terraform output>
+    python run_evaluation.py --terraform-output terraform/output.json \
+        --questions questions.jsonl \
+        --eval-role-arn "$(cd terraform && terraform output -raw eval_role_arn)" \
+        [--retrieval-metrics] [--repeats 3]
 
-    # Run (KB IDs read from terraform output JSON)
-    python run_evaluation.py --terraform-output ../terraform/output.json --questions questions.jsonl \
-        --eval-role-arn arn:aws:iam::111122223333:role/kb-chunking-benchmark-eval-role
+STATUS: run end to end against a live account on 2026-11-11 (console test CT-08-09),
+one Knowledge Base, three questions, Nova 2 Lite as generator and Nova Pro as judge:
+both the generation job and the retrieve-only job completed with no unparsed scores.
+Two constraints came out of that run:
+  * Claude 5.x models cannot be the generator. The service rejects the job with
+    "Custom prompt templates must be provided for both Orchestration and Generation",
+    and the evaluation API has no field for an orchestration prompt. Use a model with
+    default Knowledge Base prompts (Nova 2 Lite worked). Sonnet 4.6, the 1st edition's
+    generator, needs account access to the Anthropic use-case form.
+  * The eval role's InvokeModel must cover the generator you pass; see gotcha 5 in
+    the README.
+The first-edition script submitted a model-evaluation job with pre-generated
+responses and unprefixed metric names, which did not match the RAG path the
+published numbers came from.
 
-The expected wall-clock time for a full benchmark is approximately 45-90
-minutes, depending on Bedrock job queue depth. Total cost is approximately
-$18 USD assuming 25 questions × 5 KBs.
-
-Requires:
-    pip install boto3
+Requires: pip install "boto3>=1.43"
 """
 
 import argparse
 import json
 import os
+import statistics
 import sys
 import time
-from dataclasses import dataclass, asdict
-from typing import Optional
 
 import boto3
-from botocore.exceptions import ClientError
-
-
-# =============================================================================
-# Configuration
-# =============================================================================
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-
-# The generator model produces answers from retrieved chunks.
-# Sonnet 4.6 is a strong default — high quality, reasonable cost.
-GENERATOR_MODEL_ID = os.environ.get(
-    "GENERATOR_MODEL_ID",
-    "us.anthropic.claude-sonnet-4-6"
-)
-
-# The judge model evaluates generator outputs against ground truth.
-# Nova Pro because:
-#   1. It is on the Bedrock Evaluations allowlist (Sonnet 4.x is not — gotcha #4)
-#   2. Cross-family judging reduces intra-family self-evaluation bias
+GENERATOR_PROFILE_ID = os.environ.get("GENERATOR_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 JUDGE_MODEL_ID = os.environ.get("JUDGE_MODEL_ID", "amazon.nova-pro-v1:0")
 
-# Generation metrics. Retrieval-only metrics (ContextRelevance, ContextCoverage)
-# CANNOT be combined with these in a single eval job — see gotcha #6.
-METRICS = ["Correctness", "Completeness", "Helpfulness", "Faithfulness"]
-
+GENERATION_METRICS = ["Builtin.Correctness", "Builtin.Completeness",
+                      "Builtin.Helpfulness", "Builtin.Faithfulness"]
+RETRIEVAL_METRICS = ["Builtin.ContextRelevance", "Builtin.ContextCoverage"]
 
 bedrock = boto3.client("bedrock", region_name=AWS_REGION)
-bedrock_agent_runtime = boto3.client("bedrock-agent-runtime", region_name=AWS_REGION)
+s3 = boto3.client("s3", region_name=AWS_REGION)
 
 
-# =============================================================================
-# Data classes
-# =============================================================================
-
-@dataclass
-class StrategyResult:
-    """Aggregated results for one chunking strategy."""
-    strategy: str
-    kb_id: str
-    job_arn: Optional[str] = None
-    status: str = "PENDING"
-    correctness: Optional[float] = None
-    completeness: Optional[float] = None
-    helpfulness: Optional[float] = None
-    faithfulness: Optional[float] = None
-    error: Optional[str] = None
+def generator_arn() -> str:
+    account = boto3.client("sts").get_caller_identity()["Account"]
+    return f"arn:aws:bedrock:{AWS_REGION}:{account}:inference-profile/{GENERATOR_PROFILE_ID}"
 
 
-# =============================================================================
-# Upload prompt dataset to S3 (Bedrock Evaluations input format)
-# =============================================================================
-
-def build_prompt_dataset(questions_file: str, kb_id: str, output_bucket: str, output_key: str) -> str:
-    """Convert questions.jsonl into the format Bedrock Evaluations expects.
-
-    Each line is a JSON object with the prompt, ground truth, and the KB ARN
-    to retrieve from. The runner generates a response per prompt using
-    retrieve_and_generate, then the eval job scores those responses.
-
-    Returns the S3 URI of the uploaded dataset.
-    """
-    s3 = boto3.client("s3", region_name=AWS_REGION)
+def upload_dataset(questions_file: str, bucket: str, key: str) -> str:
+    """questions.jsonl -> RAG evaluation dataset (one conversation turn per line)."""
     lines = []
-    with open(questions_file) as f:
+    with open(questions_file, encoding="utf-8") as f:
         for line in f:
+            if not line.strip():
+                continue
             row = json.loads(line)
-            # Generate the candidate answer using the KB
-            answer = retrieve_and_generate_one(row["question"], kb_id)
-            lines.append(json.dumps({
+            lines.append(json.dumps({"conversationTurns": [{
                 "prompt": {"content": [{"text": row["question"]}]},
                 "referenceResponses": [{"content": [{"text": row["ground_truth"]}]}],
-                "category": "kb-chunking-benchmark",
-                "responses": [{"response": answer, "modelIdentifier": GENERATOR_MODEL_ID}],
-            }))
-
-    s3.put_object(
-        Bucket=output_bucket,
-        Key=output_key,
-        Body="\n".join(lines).encode("utf-8"),
-    )
-    return f"s3://{output_bucket}/{output_key}"
+            }]}))
+    s3.put_object(Bucket=bucket, Key=key, Body="\n".join(lines).encode("utf-8"))
+    return f"s3://{bucket}/{key}"
 
 
-def retrieve_and_generate_one(question: str, kb_id: str) -> str:
-    """Generate a response for one question against one KB."""
-    try:
-        response = bedrock_agent_runtime.retrieve_and_generate(
-            input={"text": question},
-            retrieveAndGenerateConfiguration={
-                "type": "KNOWLEDGE_BASE",
-                "knowledgeBaseConfiguration": {
-                    "knowledgeBaseId": kb_id,
-                    "modelArn": f"arn:aws:bedrock:{AWS_REGION}::foundation-model/{GENERATOR_MODEL_ID}",
-                },
-            },
-        )
-        return response["output"]["text"]
-    except ClientError as exc:
-        return f"[ERROR generating response: {exc}]"
-
-
-# =============================================================================
-# Submit evaluation job
-# =============================================================================
-
-def submit_eval_job(
-    strategy: str,
-    kb_id: str,
-    dataset_s3_uri: str,
-    output_s3_uri: str,
-    role_arn: str,
-) -> str:
-    """Submit a Bedrock Evaluations job for one strategy. Returns the job ARN."""
+def submit_job(name, role_arn, kb_id, dataset_uri, output_uri, retrieval_only):
+    retrieval_cfg = {"vectorSearchConfiguration": {"numberOfResults": 5}}
+    if retrieval_only:
+        rag = {"retrieveConfig": {
+            "knowledgeBaseId": kb_id,
+            "knowledgeBaseRetrievalConfiguration": retrieval_cfg}}
+        metrics = RETRIEVAL_METRICS
+    else:
+        rag = {"retrieveAndGenerateConfig": {
+            "type": "KNOWLEDGE_BASE",
+            "knowledgeBaseConfiguration": {
+                "knowledgeBaseId": kb_id,
+                "modelArn": generator_arn(),
+                "retrievalConfiguration": retrieval_cfg}}}
+        metrics = GENERATION_METRICS
     response = bedrock.create_evaluation_job(
-        jobName=f"kb-benchmark-{strategy}-{int(time.time())}",
+        jobName=name,
         roleArn=role_arn,
-        evaluationConfig={
-            "automated": {
-                "datasetMetricConfigs": [{
-                    "taskType": "QuestionAndAnswer",
-                    "dataset": {"name": "Custom", "datasetLocation": {"s3Uri": dataset_s3_uri}},
-                    "metricNames": METRICS,
-                }],
-                "evaluatorModelConfig": {
-                    "bedrockEvaluatorModels": [{"modelIdentifier": JUDGE_MODEL_ID}]
-                },
-            }
-        },
-        inferenceConfig={
-            "models": [{"bedrockModel": {
-                "modelIdentifier": GENERATOR_MODEL_ID,
-                "inferenceParams": '{"temperature": 0.0, "maxTokens": 1024}',
-            }}]
-        },
-        outputDataConfig={"s3Uri": output_s3_uri},
+        applicationType="RagEvaluation",
+        inferenceConfig={"ragConfigs": [{"knowledgeBaseConfig": rag}]},
+        outputDataConfig={"s3Uri": output_uri},
+        evaluationConfig={"automated": {
+            "datasetMetricConfigs": [{
+                "taskType": "QuestionAndAnswer",
+                "dataset": {"name": "RagDataset", "datasetLocation": {"s3Uri": dataset_uri}},
+                "metricNames": metrics,
+            }],
+            "evaluatorModelConfig": {"bedrockEvaluatorModels": [{"modelIdentifier": JUDGE_MODEL_ID}]},
+        }},
     )
-    return response["jobArn"]
+    return response["jobArn"], metrics
 
 
-# =============================================================================
-# Poll job completion
-# =============================================================================
-
-def poll_job(job_arn: str, poll_interval: int = 60, max_wait: int = 7200) -> str:
-    """Poll until the job reaches a terminal status. Returns final status."""
-    elapsed = 0
-    while elapsed < max_wait:
-        response = bedrock.get_evaluation_job(jobIdentifier=job_arn)
-        status = response["status"]
-        print(f"  [{elapsed}s] {job_arn.split('/')[-1]} → {status}")
-        if status in ("COMPLETED", "FAILED", "STOPPED"):
-            return status
-        time.sleep(poll_interval)
-        elapsed += poll_interval
+def poll(job_arn, interval=60, max_wait=7200):
+    waited = 0
+    while waited < max_wait:
+        status = bedrock.get_evaluation_job(jobIdentifier=job_arn)["status"]
+        print(f"  [{waited:>5}s] {job_arn.split('/')[-1]} -> {status}")
+        if status in ("Completed", "Failed", "Stopped", "COMPLETED", "FAILED", "STOPPED"):
+            return status.upper()
+        time.sleep(interval)
+        waited += interval
     return "TIMEOUT"
 
 
-# =============================================================================
-# Parse results from S3
-# =============================================================================
+def _scores(record):
+    """Yield (metricName, value) from either documented output shape.
 
-def parse_job_results(output_s3_uri: str, strategy: str) -> dict:
-    """Read the evaluation output from S3 and aggregate per-metric averages.
-
-    The real output layout (confirmed against
-    https://docs.aws.amazon.com/bedrock/latest/userguide/model-evaluation-report-s3.html):
-    completed jobs write one JSON-line file per metric under a "datasets/"
-    directory (e.g. "datasets/Correctness_input-dataset.jsonl"), and each
-    line nests the score under "automatedEvaluationResult.scores[]" —
-    {"metricName": ..., "result": ...} — NOT a flat {"metricName", "score"}
-    record. Reading the flat shape silently matches nothing and every
-    average comes back None.
+    The September 2026 Managed KB lab found RAG jobs write
+    conversationTurns[].results[] rather than automatedEvaluationResult.scores[].
+    Results with result=null ("Unable to parse score") are skipped and counted.
     """
-    s3 = boto3.client("s3", region_name=AWS_REGION)
-    # Output URI looks like s3://bucket/prefix/jobs/<jobId>/...
-    # The results file is typically jobs/<jobId>/datasets/<metric>_input-dataset.jsonl
-    bucket = output_s3_uri.replace("s3://", "").split("/")[0]
-    prefix = "/".join(output_s3_uri.replace("s3://", "").split("/")[1:])
+    for turn in record.get("conversationTurns", []):
+        for res in turn.get("results", []):
+            yield res.get("metricName"), res.get("result")
+    for res in record.get("automatedEvaluationResult", {}).get("scores", []):
+        yield res.get("metricName"), res.get("result")
 
-    metric_sums = {m: 0.0 for m in METRICS}
-    metric_counts = {m: 0 for m in METRICS}
 
-    paginator = s3.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+def parse_results(output_uri, metrics):
+    bucket, _, prefix = output_uri.replace("s3://", "").partition("/")
+    sums = {m: 0.0 for m in metrics}
+    counts = {m: 0 for m in metrics}
+    unparsed = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             if not obj["Key"].endswith(".jsonl"):
                 continue
             body = s3.get_object(Bucket=bucket, Key=obj["Key"])["Body"].read().decode("utf-8")
-            for line in body.split("\n"):
-                if not line.strip():
-                    continue
-                rec = json.loads(line)
-                scores = rec.get("automatedEvaluationResult", {}).get("scores", [])
-                for score in scores:
-                    metric_name = score.get("metricName")
-                    value = score.get("result")
-                    if metric_name in METRICS and isinstance(value, (int, float)):
-                        metric_sums[metric_name] += float(value)
-                        metric_counts[metric_name] += 1
+            for line in filter(str.strip, body.split("\n")):
+                for name, value in _scores(json.loads(line)):
+                    if name not in sums:
+                        continue
+                    if isinstance(value, (int, float)):
+                        sums[name] += float(value)
+                        counts[name] += 1
+                    else:
+                        unparsed += 1
+    means = {m: (sums[m] / counts[m] if counts[m] else None) for m in metrics}
+    return means, unparsed
 
-    averages = {}
-    for m in METRICS:
-        averages[m.lower()] = (
-            metric_sums[m] / metric_counts[m] if metric_counts[m] > 0 else None
-        )
-    return averages
-
-
-# =============================================================================
-# Main flow
-# =============================================================================
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--terraform-output", required=True,
-                        help="Path to terraform output JSON with knowledge_base_ids and corpus_bucket.")
-    parser.add_argument("--questions", required=True,
-                        help="Path to questions.jsonl with the 25-question corpus.")
-    parser.add_argument("--eval-role-arn", required=True,
-                        help="IAM role ARN for the evaluation job (see Chapter 8 Section 8.5 gotcha #5).")
-    parser.add_argument("--output-csv", default="benchmark-results.csv",
-                        help="Where to write the comparison table.")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--terraform-output", required=True)
+    ap.add_argument("--questions", required=True)
+    ap.add_argument("--eval-role-arn", required=True)
+    ap.add_argument("--retrieval-metrics", action="store_true")
+    ap.add_argument("--no-generation", action="store_true",
+                    help="Only submit the retrieve-only job (implies --retrieval-metrics). "
+                         "Cheaper way to repeat the metrics that separate strategies.")
+    ap.add_argument("--repeats", type=int, default=1)
+    ap.add_argument("--output-csv", default="benchmark-results.csv")
+    args = ap.parse_args()
 
-    with open(args.terraform_output) as f:
-        tf_out = json.load(f)
-    kb_ids = tf_out["knowledge_base_ids"]["value"]
-    corpus_bucket = tf_out["corpus_bucket"]["value"]
+    tf = json.load(open(args.terraform_output, encoding="utf-8"))
+    kb_ids = tf["knowledge_base_ids"]["value"]
+    bucket = tf["corpus_bucket"]["value"]
+    dataset_uri = upload_dataset(args.questions, bucket, "eval-input/questions-rag.jsonl")
 
-    results: list[StrategyResult] = []
-
-    # Phase 1: submit all jobs
-    print("Phase 1: submitting eval jobs for all 5 strategies...")
+    jobs = []  # (strategy, kind, run, arn, metrics, output_uri)
+    stamp = int(time.time())
     for strategy, kb_id in kb_ids.items():
-        print(f"\n--- Strategy: {strategy} (KB: {kb_id}) ---")
-        result = StrategyResult(strategy=strategy, kb_id=kb_id)
-        try:
-            dataset_uri = build_prompt_dataset(
-                questions_file=args.questions,
-                kb_id=kb_id,
-                output_bucket=corpus_bucket,
-                output_key=f"eval-input/{strategy}.jsonl",
-            )
-            output_uri = f"s3://{corpus_bucket}/eval-output/{strategy}/"
-            result.job_arn = submit_eval_job(
-                strategy=strategy,
-                kb_id=kb_id,
-                dataset_s3_uri=dataset_uri,
-                output_s3_uri=output_uri,
-                role_arn=args.eval_role_arn,
-            )
-            result.status = "SUBMITTED"
-            print(f"  Submitted: {result.job_arn}")
-        except Exception as exc:
-            result.error = str(exc)
-            result.status = "ERROR"
-            print(f"  ERROR: {exc}")
-        results.append(result)
+        with_ret = args.retrieval_metrics or args.no_generation
+        kinds = ([] if args.no_generation else [("gen", False)]) + ([("ret", True)] if with_ret else [])
+        for kind, retrieval_only in kinds:
+            runs = args.repeats if kind == "gen" else 1
+            for run in range(1, runs + 1):
+                out = f"s3://{bucket}/eval-output/{strategy}/{kind}-{run}-{stamp}/"
+                name = f"kb-{strategy}-{kind}-{run}-{stamp}"[:63]
+                arn, metrics = submit_job(name, args.eval_role_arn, kb_id,
+                                          dataset_uri, out, retrieval_only)
+                print(f"submitted {name}")
+                jobs.append((strategy, kind, run, arn, metrics, out))
 
-    # Phase 2: poll for completion
-    print("\nPhase 2: polling for completion (this may take 45-90 minutes)...")
-    for result in results:
-        if result.job_arn:
-            result.status = poll_job(result.job_arn)
-            if result.status == "COMPLETED":
-                averages = parse_job_results(
-                    output_s3_uri=f"s3://{corpus_bucket}/eval-output/{result.strategy}/",
-                    strategy=result.strategy,
-                )
-                result.correctness = averages.get("correctness")
-                result.completeness = averages.get("completeness")
-                result.helpfulness = averages.get("helpfulness")
-                result.faithfulness = averages.get("faithfulness")
+    rows = []
+    for strategy, kind, run, arn, metrics, out in jobs:
+        status = poll(arn)
+        means, unparsed = parse_results(out, metrics) if status == "COMPLETED" else ({}, 0)
+        rows.append({"strategy": strategy, "kind": kind, "run": run,
+                     "status": status, "unparsed": unparsed, **means})
 
-    # Phase 3: write comparison table
-    print("\nPhase 3: writing comparison table...")
-    print(f"\n{'Strategy':<14} {'Correctness':>11} {'Completeness':>12} {'Helpfulness':>11} {'Faithfulness':>12}")
-    print("-" * 65)
-    with open(args.output_csv, "w") as f:
-        f.write("strategy,correctness,completeness,helpfulness,faithfulness,status\n")
-        for r in results:
-            def fmt(v): return f"{v:.3f}" if v is not None else "  -  "
-            row = f"{r.strategy:<14} {fmt(r.correctness):>11} {fmt(r.completeness):>12} {fmt(r.helpfulness):>11} {fmt(r.faithfulness):>12}"
-            print(row)
-            f.write(f"{r.strategy},{r.correctness or ''},{r.completeness or ''},"
-                    f"{r.helpfulness or ''},{r.faithfulness or ''},{r.status}\n")
+    with open(args.output_csv, "w", encoding="utf-8") as f:
+        keys = ["strategy", "kind", "run", "status", "unparsed"] + GENERATION_METRICS + RETRIEVAL_METRICS
+        f.write(",".join(keys) + "\n")
+        for r in rows:
+            f.write(",".join("" if r.get(k) is None else str(r.get(k)) for k in keys) + "\n")
 
-    print(f"\nResults written to {args.output_csv}")
+    print(f"\n{'strategy':<14}{'metric':<26}{'mean':>8}{'min':>8}{'max':>8}{'n':>4}")
+    for strategy in kb_ids:
+        for metric in GENERATION_METRICS + RETRIEVAL_METRICS:
+            vals = [r[metric] for r in rows
+                    if r["strategy"] == strategy and r.get(metric) is not None]
+            if vals:
+                print(f"{strategy:<14}{metric:<26}{statistics.mean(vals):>8.3f}"
+                      f"{min(vals):>8.3f}{max(vals):>8.3f}{len(vals):>4}")
+    print(f"\nWrote {args.output_csv}. Check the 'unparsed' column: judge "
+          "responses the service could not score are excluded, not averaged as zero.")
     return 0
 
 

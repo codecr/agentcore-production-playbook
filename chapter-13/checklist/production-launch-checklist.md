@@ -1,6 +1,6 @@
 # Production Launch Checklist for AgentCore Agents
 
-Accompanies Chapter 12 of *AgentCore in Production: The Operator's Playbook*.
+Accompanies Chapter 13 of *AgentCore in Production: The Operator's Playbook*.
 
 This is the checklist I would hand a team on day one. It is organized by
 **phase**, not by service, because the order in which you do these things
@@ -17,7 +17,7 @@ domain requires. A checklist nobody edits is a checklist nobody uses.
 - [ ] **The use case survives the "why an agent" question.** Write one
       paragraph explaining why this needs an agent rather than a workflow, a
       form, or a search box. If the paragraph is hard to write, the answer is
-      probably a workflow. See Chapter 12 Section 12.8.
+      probably a workflow. See Chapter 13 Section 13.13.
 - [ ] **The failure mode of a wrong answer is understood and written down.**
       Wrong answers are not hypothetical. Who is harmed, how badly, and how
       would anyone find out?
@@ -90,6 +90,15 @@ domain requires. A checklist nobody edits is a checklist nobody uses.
 - [ ] A business-level correlation id is propagated through payloads across
       every agent boundary, and stamped on every root span.
 - [ ] Agent name, tenant id, and hop count are span attributes.
+- [ ] Span queries cover the per-agent log groups (agents created from
+      2026-07-20) and `aws/spans` (older agents). See Chapter 11.
+
+**Containment**
+
+- [ ] A kill switch exists and one on-call person may pull it without
+      asking: entry flag, a ready stateless Cedar `forbid`, `StopRuntimeSession`,
+      payment sessions. See `runbook/kill-switch.md`. Pulled once in staging,
+      with the time to "calls denied" recorded.
 
 ## Phase 2 — Before the first production deploy
 
@@ -97,16 +106,33 @@ domain requires. A checklist nobody edits is a checklist nobody uses.
       behavior, including negative cases and at least one case per past
       incident.
 - [ ] **Quality gate runs in CI** against a baseline, with per-metric floors
-      and tolerances, blocking on regression.
-- [ ] **Online evaluation is configured** with three evaluators and a sampling
-      rate derived from traffic volume.
+      and tolerances, category-level checks, blocking on regression. The
+      **baseline moves only with an explicit flag**, and the flag puts a name
+      in the deploy log; a baseline that updates itself after every green
+      build ratchets downward.
+- [ ] **Online evaluation is configured** with the three starter evaluators,
+      Helpfulness (response), ToolSelectionAccuracy (trajectory), and
+      GoalSuccessRate (outcome), and a sampling rate derived from traffic.
 - [ ] **Alarms exist for**: sustained low quality, anomalous quality drops,
       and — most importantly — evaluation results no longer arriving.
 - [ ] **A rollback path is written down and rehearsed.** Not "we would roll
-      back", but the specific command, the specific version, and who runs it.
-- [ ] **Load and cost projection done.** Expected sessions per day, tokens per
-      session, tool calls per session, and the resulting monthly number. Show
-      it to whoever owns that budget before, not after.
+      back", but the specific command (`update-agent-runtime-endpoint
+      --agent-runtime-version N` on the named endpoint clients invoke), the
+      specific version, and who runs it. Guardrail versions, Cedar policies,
+      and Gateway tool descriptions have their own rollback paths.
+- [ ] **Quotas checked against peak traffic**: Bedrock model RPM/TPM in the
+      Region (or a cross-Region inference profile), Runtime session creation
+      and active-session limits, Memory extraction, Gateway rate limits.
+      Batch runners bound concurrency; retries happen at one layer only.
+- [ ] **Retention and deletion path written for every store**: long-term
+      memory (namespace by user; record expiry), short-term events, Session
+      Storage, Knowledge Base sources, log groups (retention period, what
+      goes into spans), evaluation outputs, payment instruments.
+- [ ] **Cost per session projected**: model tokens, Runtime vCPU and GB
+      seconds, Gateway and Policy calls, Memory, evaluation judge tokens, and
+      payment provider fees. Resources tagged by agent for cost allocation.
+      Show it to whoever owns that budget before launch. Price tables:
+      Appendix C.
 - [ ] **The agent is registered in the catalog** with owner, contact, tool
       schema, and a description written in the words a consumer would search.
 - [ ] **An incident runbook exists** for this agent specifically. See
@@ -147,18 +173,26 @@ Everything above, plus:
 
 - [ ] End-user wallet authorization is explicit and revocable.
 - [ ] Session spending limits are set to the smallest number that works.
+- [ ] Paid calls go through Gateway tools, so Cedar and Dogwood can see them.
+- [ ] A Dogwood daily fence (`payments/daily-spend.dogwood`) with the policy
+      session id derived by the backend from agent, tenant, and UTC date.
+      Remember it resets whenever a temporal policy is deployed.
 - [ ] **Aggregate daily and monthly budgets exist outside the session**, with
       atomic counters. Session limits alone do not bound total spend.
 - [ ] Single-transaction cap is at most a tenth of the daily cap.
 - [ ] Payee allowlist enforced at the Gateway, not only in application code.
-- [ ] Anything with a duration — subscriptions, licences, recurring access —
-      requires human approval.
+- [ ] Anything with a duration (subscriptions, licenses, recurring access)
+      requires a procurement role on the principal, set by the identity
+      provider. Never a token the model can type (`payment-policies.cedar` P05).
 - [ ] A purchase ledger is consulted before buying anything durable, so the
       agent does not re-buy what it already has.
 - [ ] Payment receipts flow into the same telemetry as everything else, with
       the correlation id attached.
 - [ ] Denials are logged with enough context to distinguish a budget stop from
       a signing failure from a merchant verification failure.
+- [ ] Coinbase wallets: the AWS Marketplace subscription is in place.
+      Provider per-operation fees are modeled per ticket size.
+- [ ] Nightly reconciliation against the wallet provider's transaction export.
 - [ ] Finance sees agent spend in the same review cadence as any other vendor
       spend, and knows who to call.
 

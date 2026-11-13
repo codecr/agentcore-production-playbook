@@ -19,7 +19,12 @@ What this provides:
       HTTP 400 at test time instead of at request time)
     - Compatibility checking between versions, so a breaking change is
       labeled as one
-    - Warm-up support for Bedrock's 24-hour grammar cache
+    - Checks against the Bedrock Structured Outputs subset of Draft 2020-12
+      (unsupported keywords, the 12-optional / 16-union limits)
+    - `check_ranges`: the post-parse business checks (ranges, lengths) that
+      Bedrock does not let a schema express
+    - Warm-up support for Bedrock's 24-hour grammar cache, with the 120 s
+      read timeout AWS recommends for the first (compiling) request
 
 Requires:
     pip install boto3 jsonschema
@@ -55,9 +60,13 @@ class SchemaVersion:
 
     @property
     def qualified_name(self) -> str:
-        """The name passed to Bedrock. Versioned so the grammar cache key
-        changes when the schema changes — two different schemas must never
-        share a name."""
+        """The name passed to Bedrock, versioned.
+
+        Not for the grammar cache: Bedrock caches compiled grammars per
+        account for identical schemas, so a changed schema compiles fresh
+        whatever its name. The version is for everything else that reads
+        the name (logs, dashboards, consumers), so two different contracts
+        never appear under one name."""
         return f"{self.name}_v{self.version}"
 
 
@@ -140,13 +149,15 @@ class SchemaRegistry:
     def warm_cache(self, bedrock_client, model_id: str, names: Optional[list[str]] = None) -> dict:
         """Pre-compile grammars for the given schemas.
 
-        Bedrock compiles each schema into a grammar and caches it for roughly
-        24 hours. The first request against a new schema pays the compilation
-        cost. On a deploy that introduces or changes schemas, that cost lands
-        on whichever user happens to arrive first.
+        Bedrock compiles each new schema into a grammar, which AWS documents
+        can take up to about 90 seconds, and caches it for 24 hours from first
+        access. On a deploy that introduces or changes schemas, that cost
+        lands on whichever user happens to arrive first.
 
-        Calling this at startup — with a trivial prompt — moves the cost to
-        deploy time. Failures here are not fatal; log and continue.
+        Calling this at startup, with a trivial prompt, moves the cost to
+        deploy time. Pass a client built with `structured_outputs_client()`
+        (read timeout >= 120 s) or the first call may time out mid-compile.
+        Failures here are not fatal; log and continue.
         """
         results: dict[str, str] = {}
         for schema_name in (names or self.names()):
@@ -154,7 +165,7 @@ class SchemaRegistry:
                 bedrock_client.converse(
                     modelId=model_id,
                     messages=[{"role": "user", "content": [{"text": "warm"}]}],
-                    inferenceConfig={"maxTokens": 64, "temperature": 0.0},
+                    inferenceConfig={"maxTokens": 64},
                     outputConfig=self.output_config(schema_name),
                 )
                 results[schema_name] = "warmed"
@@ -164,9 +175,27 @@ class SchemaRegistry:
         return results
 
 
+def structured_outputs_client(region: Optional[str] = None):
+    """A bedrock-runtime client with the read timeout AWS recommends (>= 120 s)
+    so the first request against a new schema survives grammar compilation."""
+    import boto3
+    from botocore.config import Config
+    return boto3.client(
+        "bedrock-runtime",
+        region_name=region,
+        config=Config(read_timeout=120, retries={"max_attempts": 2, "mode": "standard"}),
+    )
+
+
 # =========================================================================
 # Local validation
 # =========================================================================
+
+# Keywords the Bedrock Structured Outputs subset rejects with HTTP 400
+# (Bedrock user guide, "Get validated JSON results from models", Oct 2026).
+UNSUPPORTED_KEYWORDS = ("minimum", "maximum", "multipleOf", "minLength", "maxLength")
+MAX_OPTIONAL_PROPERTIES = 12
+MAX_UNION_TYPED_PROPERTIES = 16
 
 def validate_schema(schema: dict[str, Any]) -> list[str]:
     """Validate a schema locally and return a list of problems.
@@ -195,6 +224,102 @@ def validate_schema(schema: dict[str, Any]) -> list[str]:
         )
 
     problems.extend(_check_conventions(schema, path="$"))
+    problems.extend(check_bedrock_subset(schema))
+    return problems
+
+
+def check_bedrock_subset(schema: dict[str, Any]) -> list[str]:
+    """Flag what Bedrock Structured Outputs would reject with HTTP 400.
+
+    Draft 2020-12 allows all of these; Bedrock's subset does not. Checking
+    here turns a 400 at request time (or after a ~90 s compile, for the
+    optional-property limit) into a failing unit test.
+    """
+    problems: list[str] = []
+    counts = {"optional": 0, "union": 0}
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                walk(item, f"{path}[{i}]")
+            return
+        if not isinstance(node, dict):
+            return
+        for keyword in UNSUPPORTED_KEYWORDS:
+            if keyword in node:
+                problems.append(
+                    f"{path}: '{keyword}' is not supported by Bedrock Structured "
+                    f"Outputs (HTTP 400); enforce it in check_ranges instead"
+                )
+        if "minItems" in node and node["minItems"] not in (0, 1):
+            problems.append(f"{path}: minItems must be 0 or 1 for Bedrock")
+        ref = node.get("$ref")
+        if isinstance(ref, str) and not ref.startswith("#"):
+            problems.append(f"{path}: external $ref is not supported by Bedrock")
+        if isinstance(node.get("type"), list) or "anyOf" in node:
+            counts["union"] += 1
+        if node.get("type") == "object":
+            props = node.get("properties", {}) or {}
+            required = set(node.get("required", []) or [])
+            counts["optional"] += len(set(props) - required)
+            if node.get("additionalProperties") is not False:
+                problems.append(f"{path}: Bedrock requires additionalProperties=false")
+        for key, value in node.items():
+            if key in ("properties", "$defs", "definitions") and isinstance(value, dict):
+                for name, sub in value.items():
+                    walk(sub, f"{path}.{name}")
+            elif key in ("items", "anyOf", "allOf"):
+                walk(value, f"{path}.{key}")
+
+    walk(schema, "$")
+    if counts["optional"] > MAX_OPTIONAL_PROPERTIES:
+        problems.append(
+            f"$: {counts['optional']} optional properties; Bedrock allows "
+            f"{MAX_OPTIONAL_PROPERTIES} ('Schema is too complex')"
+        )
+    if counts["union"] > MAX_UNION_TYPED_PROPERTIES:
+        problems.append(
+            f"$: {counts['union']} union-typed properties; Bedrock allows "
+            f"{MAX_UNION_TYPED_PROPERTIES}"
+        )
+    return problems
+
+
+# =========================================================================
+# Post-parse business checks
+# =========================================================================
+# Ranges and lengths the schema cannot carry. Run these after json.loads and
+# before anything acts on the result. Each rule: (field, min, max, max_len).
+
+RANGE_RULES: dict[str, list[tuple[str, Optional[float], Optional[float], Optional[int]]]] = {
+    "ticket_triage": [
+        ("confidence", 0.0, 1.0, None),
+        ("summary", None, None, 140),
+    ],
+    "issue_refund": [
+        ("amount_cents", 1, None, None),
+    ],
+}
+
+
+def check_ranges(contract: str, payload: dict[str, Any]) -> list[str]:
+    """Return the business-rule violations in a parsed payload.
+
+    An empty list means the payload is within range. A non-empty list is a
+    failure with a reason: emit a metric and route to a human; never coerce.
+    """
+    problems: list[str] = []
+    for field_name, low, high, max_len in RANGE_RULES.get(contract, []):
+        value = payload.get(field_name)
+        if value is None:
+            continue
+        is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        if low is not None and is_number and value < low:
+            problems.append(f"{field_name}={value} is below {low}")
+        if high is not None and is_number and value > high:
+            problems.append(f"{field_name}={value} is above {high}")
+        if max_len is not None and isinstance(value, str) and len(value) > max_len:
+            problems.append(f"{field_name} has {len(value)} characters; max {max_len}")
     return problems
 
 
@@ -277,12 +402,13 @@ def _compare_node(
         if removed:
             breaking.append(f"property '{path}' removed enum values: {sorted(removed)}")
         if added:
-            compatible.append(f"property '{path}' added enum values: {sorted(added)}")
+            # The model can now emit a value that consumers' match statements
+            # and lookup tables have never seen: breaking for every consumer.
+            breaking.append(f"property '{path}' added enum values: {sorted(added)}")
     elif old_enum and not new_enum:
-        # The enum constraint was removed entirely rather than narrowed —
-        # every value the old enum allowed is still allowed, so this is a
-        # widening, not a breaking change.
-        compatible.append(f"removed enum constraint on '{path}' (widening, compatible)")
+        # The enum constraint was removed entirely: the model may now emit any
+        # string, which is the widest form of adding enum values.
+        breaking.append(f"removed enum constraint on '{path}' (widening, breaking for consumers)")
 
     # Recurse into a nested object's own properties (e.g. a property whose
     # schema is itself `type: "object"` with `properties`).
@@ -358,7 +484,9 @@ def compare_versions(old: dict[str, Any], new: dict[str, Any]) -> dict[str, list
     Returns a dict with 'breaking' and 'compatible' change lists.
 
     Breaking changes are ones that can invalidate a downstream consumer:
-    removing a property, narrowing an enum, changing a type, adding a
+    removing a property, any change to an enum (narrowing breaks the prompts
+    and tests that produce the removed value; widening breaks every consumer
+    that matches on the enum), changing a type, adding a
     required property that consumers do not know about, an existing
     optional property becoming required, or a required property becoming
     optional (consumers may have assumed it was always present). Run this
