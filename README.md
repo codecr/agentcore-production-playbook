@@ -77,7 +77,8 @@ differ across chapters. In general, expect:
 
 ## License
 
-Code, configurations, and templates in this repository are **MIT licensed** —
+Code, configurations, and templates in this repository are **MIT licensed**
+(see [LICENSE](LICENSE)) —
 copy them into your own projects freely. The book text itself is copyrighted
 and not included here; this repository is the code that accompanies it, not
 the book.
