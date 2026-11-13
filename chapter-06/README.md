@@ -1,4 +1,4 @@
-# Chapter 6: Session Storage
+# Chapter 6 — Session Storage: What the Agent Built, Between One Session and the Next
 
 This folder accompanies Chapter 6 of *AgentCore in Production: The Operator's Playbook*.
 

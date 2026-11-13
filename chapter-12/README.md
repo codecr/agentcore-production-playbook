@@ -1,4 +1,4 @@
-# Chapter 12: Multi-Agent Systems and A2A in Production
+# Chapter 12 — Agents Calling Agents: A2A, Delegation, and the Blast Radius of a Hop
 
 This folder accompanies Chapter 12 of *AgentCore in Production: The Operator's Playbook*, 2nd edition (new in this edition). In the first edition, Chapter 12 was the operations playbook; it is now Chapter 13 and lives in `chapter-13/`.
 

@@ -1,4 +1,4 @@
-# Chapter 3: AgentCore Policy with Cedar
+# Chapter 3 — AgentCore Policy with Cedar: The Wall Outside the Reasoning Loop
 
 This folder accompanies Chapter 3 of *AgentCore in Production: The Operator's Playbook*.
 
@@ -126,7 +126,7 @@ pytest -v
 
 The `cedarpy` version is pinned deliberately: its public API (`PolicySet.from_str`, the `Decision` enum) has changed across minor versions, and this repo's code is written against 4.8.7.
 
-For property-based testing with `hypothesis`, see Chapter 3 Section 3.6 of the book.
+For property-based testing with `hypothesis`, see Chapter 3 Section 3.8 of the book.
 
 ## CI/CD pattern
 

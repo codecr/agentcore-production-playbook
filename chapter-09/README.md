@@ -1,4 +1,4 @@
-# Chapter 9: Structured Outputs
+# Chapter 9 — Structured Outputs: From Probable Shape to Guaranteed Shape
 
 This folder accompanies Chapter 9 of *AgentCore in Production: The Operator's Playbook* (2nd edition, October 2026).
 

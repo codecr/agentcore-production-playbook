@@ -2,7 +2,7 @@
 test_guardrail_corpus.py — Validate a Guardrail configuration against a corpus
 of test inputs using the ApplyGuardrail API.
 
-Accompanies Chapter 4 Section 4.8 of "AgentCore in Production: The Operator's
+Accompanies Chapter 4 Section 4.6 of "AgentCore in Production: The Operator's
 Playbook". This is the pattern for catching configuration regressions before
 they reach production: every change to a Guardrail is validated against a
 corpus of representative inputs, and the classifications are diffed against

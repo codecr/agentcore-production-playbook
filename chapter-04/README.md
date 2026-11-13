@@ -1,4 +1,4 @@
-# Chapter 4: Bedrock Guardrails
+# Chapter 4 — Bedrock Guardrails: The Model-Layer Companion to Policy
 
 This folder accompanies Chapter 4 of *AgentCore in Production: The Operator's Playbook*.
 

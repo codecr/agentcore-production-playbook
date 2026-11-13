@@ -1,4 +1,4 @@
-# Chapter 5: Automated Reasoning
+# Chapter 5 — Automated Reasoning: When "Probably Correct" Is Not Enough
 
 This folder accompanies Chapter 5 of *AgentCore in Production: The Operator's Playbook*.
 

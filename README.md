@@ -27,17 +27,17 @@ environment. Start there.
 
 | # | Chapter | What's in the folder |
 |---|---|---|
-| 3 | AgentCore Policy with Cedar and Dogwood | Production Cedar policies on trusted inputs, temporal Dogwood policies, a trusted-context interceptor, a CI validation pipeline, a pytest suite |
-| 4 | Bedrock Guardrails | A reference Guardrail (CloudFormation), dynamic input tagging, a test corpus |
-| 5 | Automated Reasoning | A sample AR policy document, 19 test claims, a validation script |
-| 6 | Session Storage | Runtime deploy scripts, a resumable agent, session lifecycle helpers |
-| 7 | AgentCore Memory | A 4-strategy Memory resource (CloudFormation), a memory-aware agent, retrieval helpers |
-| 8 | Bedrock Knowledge Bases | A 5-strategy chunking benchmark (Terraform), an evaluation runner, ingestion alarms |
-| 9 | Structured Outputs | A production schema library, a before/after agent, a schema registry with compatibility checks |
-| 10 | AgentCore Evaluations | Online evaluation config, custom evaluators, a golden-set CI quality gate, alarms |
-| 11 | Agent Registry and Observability at Scale | Registry record normalization, the full publish lifecycle, IAM personas, cross-agent tracing |
-| 12 | Multi-Agent Systems and A2A | Hop-authority checks, per-hop Cedar and Dogwood policies, cross-log-group trace queries, an amplification budget, a dry-run kill switch |
-| 13 | The Operations Playbook | A production launch checklist, aggregate budget enforcement, payment Cedar and Dogwood policies, an incident runbook, a kill-switch procedure |
+| 3 | AgentCore Policy with Cedar: The Wall Outside the Reasoning Loop | Production Cedar policies on trusted inputs, temporal Dogwood policies, a trusted-context interceptor, a CI validation pipeline, a pytest suite |
+| 4 | Bedrock Guardrails: The Model-Layer Companion to Policy | A reference Guardrail (CloudFormation), dynamic input tagging, a test corpus |
+| 5 | Automated Reasoning: When "Probably Correct" Is Not Enough | A sample AR policy document, 19 test claims, a validation script |
+| 6 | Session Storage: What the Agent Built, Between One Session and the Next | Runtime deploy scripts, a resumable agent, session lifecycle helpers |
+| 7 | AgentCore Memory: What the Agent Has Learned | A 5-strategy Memory resource (CloudFormation), a memory-aware agent, retrieval helpers |
+| 8 | Bedrock Knowledge Bases: What the Agent Reads, and How It Finds It | A 5-strategy chunking benchmark (Terraform), an evaluation runner, ingestion alarms |
+| 9 | Structured Outputs: From Probable Shape to Guaranteed Shape | A production schema library, a before/after agent, a schema registry with compatibility checks |
+| 10 | Evaluations: Knowing Whether the Agent Is Any Good | Online evaluation config, custom evaluators, a golden-set CI quality gate, alarms |
+| 11 | The Registry and the Trace: Governing a Fleet You Cannot See | Registry record normalization, the full publish lifecycle, IAM personas, cross-agent tracing |
+| 12 | Agents Calling Agents: A2A, Delegation, and the Blast Radius of a Hop | Hop-authority checks, per-hop Cedar and Dogwood policies, cross-log-group trace queries, an amplification budget, a dry-run kill switch |
+| 13 | The Operations Playbook: Day One, and the Frontier | A production launch checklist, aggregate budget enforcement, payment Cedar and Dogwood policies, an incident runbook, a kill-switch procedure |
 
 Chapters 1, 2, and the appendices have no companion code — they're conceptual
 and architectural, not implementation.

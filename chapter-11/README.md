@@ -1,4 +1,4 @@
-# Chapter 11: Agent Registry and Observability at Scale
+# Chapter 11 — The Registry and the Trace: Governing a Fleet You Cannot See
 
 This folder accompanies Chapter 11 of *AgentCore in Production: The Operator's
 Playbook*, 2nd edition (October 2026).

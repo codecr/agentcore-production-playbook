@@ -1,7 +1,7 @@
 """
 test_tenant_isolation.py — Sample test suite for policies 04 and 05.
 
-This file demonstrates the testing pattern described in Chapter 3 Section 3.6.
+This file demonstrates the testing pattern described in Chapter 3 Section 3.8.
 Each policy gets at minimum: a positive test (happy path permitted) and a
 negative test for each guard condition (each "no" path is denied).
 

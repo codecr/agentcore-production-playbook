@@ -1,7 +1,7 @@
 # Kill switch: stopping one agent in under a minute
 
 Accompanies Chapter 13, Section 13.5. For agents that call other agents, use
-the layered table in the multi-agent chapter, Section 13.10, and its
+the layered table in Chapter 12, Section 12.10, and its
 companion `containment/` planner.
 
 **Who may pull it:** whoever is on call for the agent, without asking anyone.

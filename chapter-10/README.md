@@ -1,4 +1,4 @@
-# Chapter 10: AgentCore Evaluations
+# Chapter 10 — Evaluations: Knowing Whether the Agent Is Any Good
 
 This folder accompanies Chapter 10 of *AgentCore in Production: The Operator's Playbook* (2nd edition, October 2026).
 

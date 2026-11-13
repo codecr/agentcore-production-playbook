@@ -19,7 +19,7 @@ policy validation (the Cedar analyzer) via the bedrock-agentcore-control
     the "cedar" one). The author tested parameter shapes, not live calls.
 
 Used by the "Validate against AWS automated reasoning" step in
-ci/policy-validation.yml (see Chapter 3 Section 3.7). With --dry-run, no AWS
+ci/policy-validation.yml (see Chapter 3 Section 3.9). With --dry-run, no AWS
 call is made; the script only prints what it would submit and exits 0. This
 is what CI actually exercises today, since a real staging Policy Engine is
 not available in every environment that runs this workflow.

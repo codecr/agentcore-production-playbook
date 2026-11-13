@@ -1,4 +1,4 @@
-# Chapter 7: AgentCore Memory
+# Chapter 7 — AgentCore Memory: What the Agent Has Learned
 
 This folder accompanies Chapter 7 of *AgentCore in Production: The Operator's Playbook*, 2nd edition (October 2026).
 

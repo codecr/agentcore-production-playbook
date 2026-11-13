@@ -1,4 +1,4 @@
-# Chapter 8: Bedrock Knowledge Bases
+# Chapter 8 — Bedrock Knowledge Bases: What the Agent Reads, and How It Finds It
 
 This folder accompanies Chapter 8 of *AgentCore in Production: The Operator's Playbook*, 2nd edition (October 2026).
 

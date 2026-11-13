@@ -5,7 +5,7 @@ against both the new (working-tree) policy bundle and a baseline bundle, and
 report any request whose decision *flipped* between the two.
 
 Used by the "Diff decisions against historical corpus" step in
-ci/policy-validation.yml (see Chapter 3 Section 3.7). Evaluation happens
+ci/policy-validation.yml (see Chapter 3 Section 3.9). Evaluation happens
 locally via cedarpy — no AWS calls, no network.
 
 Limitation: --baseline-policies accepts the documented "branch:path" form

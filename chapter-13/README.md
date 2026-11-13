@@ -1,4 +1,4 @@
-# Chapter 13: The Operations Playbook
+# Chapter 13 — The Operations Playbook: Day One, and the Frontier
 
 This folder accompanies Chapter 13 of *AgentCore in Production: The Operator's Playbook* — the final chapter.
 
